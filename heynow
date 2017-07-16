@@ -1,0 +1,1605 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+heynow - An extended NMH whatnow script written in perl
+
+=cut
+
+my($VERSION)='0.9';
+
+use Getopt::Long qw(GetOptionsFromArray);
+use Term::ReadLine;
+use IO::Handle;
+use IPC::Open2;
+use File::Basename;
+use Pod::Usage;
+use Cwd;
+
+my($PROMPT)=Term::ReadLine->new('whatnow');
+
+my(@MH_SETTINGS)=qw(
+	path editor showproc lproc sendproc fileproc whomproc buildmimeproc
+	mimetypeproc aliasfile libdir aliproc annoproc approc
+	heynow-autoexpand heynow-format heynow-autoformat
+);
+my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam @MH_SETTINGS`);
+
+=head1 SYNOPSIS
+
+heynow [switches] [file]
+
+=head2 Options
+
+=over 8
+
+=item -v or -version
+
+Print version and exit
+
+=item -h or -? or -help
+
+Print a short help message, then exit
+
+=item -H or -manual
+
+Print the full B<heynow> documentation, then exit
+
+=item -L or -license
+
+Print the software license, then exit.
+
+=item -draftfolder +folder
+
+Name of the draft folder
+
+=item -draftmessage msg
+
+Draft message number.  Defaults to I<current>
+
+=item -nodraftfolder
+
+Don't use a draft folder
+
+=item -editor editor
+
+Use I<editor> as the editor of messages.
+
+=item -format type
+
+Use I<type> as the default format instead of the default of C<markdown>.
+Note that use of this value also overrides F<.mh_profile> settings.
+
+=item -noedit
+
+Don't go directly into an editor
+
+=item -prompt string
+
+Set prompt to I<string>.  Defaults to I<What now? >
+
+=item -mic string
+
+Specify a message digest algorithm suppored by you and your message
+recipients to use with signing messages.  Defaults to sha384.
+
+=item file
+
+Relative or absolute pathname of draft file
+
+=back
+
+=cut
+
+my(@OPTIONS)=qw(
+	version|V
+	help|?|h
+	manual|H
+	license|L
+	draftfolder=s
+	draftmessage=s
+	nodraftfolder
+	editor=s
+	format=s
+	noedit
+	prompt=s
+	contentid=s
+	defaultkey=s
+	mic=s
+);
+my(%ARG)=(
+	'prompt'		=> 'What now? ',
+	'draftfolder'	=> '+draft',
+	'contentid'	=> sprintf('%d%d%d', time(), $$, rand(1000)),
+	'mic'		=> 'sha384',
+);
+
+my(%WHATNOW)=();
+my(%ATTACHED)=();
+my($FORMAT, $SIGN, $ENCRYPT, $MIME_PENDING)=(0, 0, 0, 0);
+my($GPG_OK, $PANDOC_OK)=(undef, undef);
+
+Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
+unless(GetOptions(\%ARG, @OPTIONS)) {
+	pod2usage(-verbose => 1, -exitval => 1);
+}
+
+if($ARG{'version'}) {
+	print basename($0), ' ', $VERSION, "\n";
+	exit(0);
+} elsif($ARG{'help'}) {
+	pod2usage(-verbose => 1, -exitval => 0);
+} elsif($ARG{'manual'}) {
+	pod2usage(-verbose => 2, -exitval => 0);
+} elsif($ARG{'license'}) {
+	pod2usage(-verbose => 99, -exitval => 0,
+		-sections => ['LICENSE', 'COPYRIGHT']);
+} elsif($ARG{'draftmessage'}) {
+	$MH{'draft'}=`pick $ARG{'draftfolder'} $ARG{'draftmessage'}`;
+} elsif(@ARGV) {
+	$MH{'draft'}=$ARGV[0];
+} elsif(exists($ENV{'mhdraft'})) {
+	$MH{'draft'}=$ENV{'mhdraft'};
+} elsif($ARG{'nodraftfolder'}) {
+	$MH{'draft'}=join('/', $ENV{'HOME'}, $MH{'path'}, 'draft');
+}
+
+$MH{'editor'}=$ARG{'editor'} if($ARG{'editor'});
+$MH{'heynow-format'}=$ARG{'format'} || $MH{'heynow-format'} || 'markdown';
+$MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'} || $MH{'draft'};
+$MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
+$MH{'aliproc'}='ali' unless($MH{'aliproc'});
+$MH{'annoproc'}='anno' unless($MH{'annoproc'});
+$MH{'approc'}="$MH{'libdir'}/ap" unless($MH{'approc'});
+
+=head1 DESCRIPTION
+
+This program is a drop-in replacement for the standard nmh
+L<whatnow(1)> program.  If the standard program had an interface
+for adding commands, this one would not exist.  It contains as
+faithful as possible without actually reading through the
+whatnow source code as possible a re-implementation.
+
+Just like the standard L<whatnow(1)> program, B<heynow> supports
+MIME encoding.  One advantage of B<heynow> is that, if you specify
+a command requiring the message to be MIME encoded, it will automatically
+encode it for you before sending it, so runnign the C<mime> command
+manually becomes optional.
+
+I used MH, and I used Markdown. I mean, at different times. I never put
+them together until later in life.  In that sense, B<heynow> is just a part
+of my composition.  The ability to integrate Markdown with email to
+create mail which looks good both as text and marked up to HTML is a
+major purpose for this program.
+
+=cut
+
+sub mime_ok {
+	if($MIME_PENDING<0) {
+		print "Message is already MIME encoded, action not possible\n";
+		return(undef);
+	} else {
+		$MIME_PENDING=1;
+		return(1);
+	}
+}
+
+=head2 Commands
+
+The standard commands are implemented, and additional ones
+have been added.
+
+=head3 help [-l]
+
+Produce a help message on available commands.  With the C<-l> flag,
+the B<Commands> documentation section you are reading right now will
+be displayed.
+
+=head3 edit [<editor> <switches>]
+
+Edit the current document.  By default, the default your nmh editor will be
+used.  If you wish to specify an alternate editor for this edit, you can
+specify that in the command as C<editor>, any assoicated C<switches> will
+also be specified with the command.
+
+=head3 refile [<switches>] +folder
+
+Move draft into a different MH folder, C<switches> are send directly
+to the L<refile(1)> command.
+
+=head3 mime [<switches>]
+
+Turn an MH formated email into an RFC compliant MIME email.  This process
+will create multipart/alternative emails, emails with attachments, etc.
+All C<switches> go to L<mhbuild(1)>.
+
+=head3 format
+
+Treat the conent of the mail as if it were a text format syntax.  Use
+this content as the C<text/plain> portion of a C<multipart/alternative>
+message.  Then, use L<pandoc(1)> to convert the syntax to HTML and
+incorporate that as the C<text/html> portion of the C<multipart/alternative>
+message.  L<pandoc(1)> must be installed.
+
+The default format is the L<pandoc(1)> extended markdown, but this can be
+changed via the command-line or in your F<.mh_profile> file using the
+setting C<heynow-format>.  You can schedule B<heynow> to automatically
+run C<format> for you on every email you send by setting C<heynow-autoformat>
+to 1 in your F<.mh_profile>.
+
+=head3 display [<switches>]
+
+When distributing (forwarding) or replying to a message, it is sometimes
+helpful go list the original message being distributed.  That is what
+this command does.
+
+=head3 list [<switches>]
+
+Print the current draft to the screen.
+
+=head3 expand [-list|-verbose]
+
+Expand aliases used in the current draft.  You can review the expansion
+using the C<edit> command to look at the values.  Or, you can run C<alias>
+with the C<-verbose> option, and it will display the expansion to the screen.
+If run with the C<-list> option, the expansion is listed but the draft is
+not changed.
+
+If you set C<heynow-autoexpand: 1> in your F<.mh_profile>, then this will
+occur automaticaly just prior to any edits.
+
+=head3 alias [-add|-delete|-edit] [name] [address-list|[-component field]]
+
+Create, list, or delete an alias from your alias file.  The C<name>
+field is required except for when using the C<-edit> flag.
+When deleting aliases, your alias file is not checked for dependencies.
+Order matters when creating aliases, and so additions are added to the
+end of the file, B<aliases are not sorted>.
+
+When adding aliases, you can specify the address list manually, or you
+can use an existing field from your draft message.
+
+=head3 send [<switches>]
+
+Send the message.  If a MIME conversion is still pending, perform that
+first, then send.
+
+=head3 push [<switches>]
+
+Send the message in the background.  If a MIME conversion is still pending,
+perform that first (in the foreground in case any questions are required0,
+then send.
+
+=head3 whom [<switches>]
+
+List the address that the message will go to using your SMTP service.
+This method is not compatible with all C<mts> settings in your F<mts.conf>
+file.  When running L<whom(1)> with the C<-check> option, your server will
+only tell you if it is willing to route the email for you, not if that
+the destination server will actually accept the email and deliver it
+to your desired recipient.
+
+=head3 quit [-delete]
+
+Quit B<heynow> (the Whatnow? prompt).  By default the draft will be kept,
+you can specify the C<-delete> argument to delete the message.
+
+=head3 delete
+
+Delete the draft and quit.
+
+=head3 cd [directory]
+
+Change to C<directory>.  This is useful when combinded with attach commands,
+as you can look through the filesystem for exactly which file to attach.
+Files are attached in a fully qualified fashion, so files from multiple
+locations can be attached.
+
+=head3 pwd
+
+Print the current working directory.
+
+=head3 ls [<switches>]
+
+List files in the current directory.
+
+=head3 attach [-v] [file]
+
+Use the NMH simplified attach syntax to attach a file.  A header
+line will be added to the message with the name of the file.  Afterwards,
+a MIME encoding is scheduled.  If you forget to run the C<mime> command,
+it will be run for you when you run C<send>.  When the message is MIME
+encoded, the file will be attached.  This command is not functional after
+a message has already been MIME encoded.
+
+=head3 detach [-n] [file|#]
+
+Unattach a file which was attached using the NMH simplified attachment
+mechanism using the C<attach> command.  Files can be unattached by name,
+or, with the C<-n> option, by number.  This command is not functional after
+a message has already been MIME encoded.
+
+=head3 alist [-ln]
+
+List the attached items in the message.  By default, only the basename
+of each file is listed.  With the C<-l> flag, the fully qualified name
+is listed.  With the C<-n> flag, each item is numbered.  This is especially
+helpful with C<detach> which can optionally take a number as an argument.
+
+=head3 sign
+
+Use L<gpg(1)> to sign the message before sending using the OpenPGP standard
+for signed messages.  For the recipient to verify your signed message, they
+need to have a copy of your public key.
+
+=head3 clearsign
+
+Use L<gpg(1)> to clearsign a message.  It is normally preferred to use
+the MIME based C<sign> command.  However, if you have a person who does
+not have support for standard MIME signing, a clearsign may be your next
+best option.  A clearsign'd document can be verified just by pasting
+it into C<gpg --verify>.
+
+N.B. the C<clearsign> command disables auto formatting, even if you have
+set C<heynow-autoformat> in your F<.mh_profile>.
+
+=head3 encrypt [<switches>]
+
+Use L<gpg(1)> to encrypt the message before sending using the OpenPGP standard
+for encrypted messages.  You must have a copy of each of the recipients
+public keys to send a message this way.
+
+=head3 pubkey
+
+Attach a copy of your public key to the message.  If you would like to
+start sending encrypted or signed message to and from another person,
+you need to exchange keys.  This command simplifies the process by
+attaching your primary keys public key in one command.
+
+=head3 keyring
+
+Attach a copy of your entire public keyring to the message.  Often, when
+you wish to start communicating with someone, you may also want them to
+have access to the public keys of your aquaintances, this is especially
+helpful if you have signed other people's public keys.  There is no
+issue of sending someone a public key, and so it is always considered safe
+to send your entire keyring.
+
+=cut
+
+%WHATNOW=(
+	'help'	=> sub {
+		my(%arg)=();
+		my(@commands)=(
+			'help [-l] [command]',
+			'edit [<editor> <switches>]',
+			'refile [<switches>] +folder',
+			'mime [<switches>]',
+			'format [-format type] [-list]',
+			'display [<switches>]',
+			'list [<switches>]',
+			'expand [-list|-verbose]',
+			'alias [-add|-delete|-edit] [name] [address-list|[-component field]]',
+			'send [<switches>]',
+			'push [<switches>]',
+			'whom [<switches>]',
+			'quit [-delete]',
+			'delete',
+			'cd [directory]',
+			'pwd',
+			'(ls)',
+			'attach [-v]',
+			'detach [-n]',
+			'(al)ist [-ln]',
+			'sign',
+			'clearsign',
+			'encrypt',
+			'pubkey',
+			'keyring',
+		);
+
+		GetOptionsFromArray(\@_, \%arg, 'long|l');
+
+		if($arg{'long'}) {
+			pod2usage(
+				-sections	=> "DESCRIPTION/Commands/$_[0].*",
+				-exitval	=> 'NOEXIT',
+				-verbose	=> 99
+			);
+		} else {
+			print "Options are:\n";
+			print map("  $_\n", grep(m/^$_[0]/, @commands)), "\n";
+		}
+	},
+
+	'edit'	=> sub {
+		$WHATNOW{'expand'}->() if($MH{'heynow-autoexpand'});
+
+		if(@_) {
+			system(@_, $MH{'draft'});
+		} else {
+			system(split(m/\s+/, $MH{'editor'}), $MH{'draft'});
+		}
+	},
+
+	'refile'	=> sub {
+		system($MH{'fileproc'}, '-src', $ARG{'draftfolder'}, @_);
+	},
+
+	'mime'	=> sub {
+		my($msg)=IO::Handle->new;
+		my($mh, $mime)=(IO::Handle->new, IO::Handle->new);
+		my($begin, $end)=(undef, undef);
+		my(@email)=();
+		my(@attach)=();
+		my($body)=0;
+		my($i)=0;
+		my($file, $base);
+		local($_);
+
+		return unless(&mime_ok);
+
+		$WHATNOW{'format'}->() if($MH{'heynow-autoformat'});
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			if(m/^MIME-Version:/) {
+				close($msg);
+				print "Draft is already in MIME format, message unchanged\n";
+				return;
+			}
+
+			if($body) {
+				if(m/^---+ ?$/) {
+					s/$/ /;
+				}
+				#Need to work on this:
+				#if(m/^#+ /) {
+				#	s/^/#/;
+				#}
+			}
+
+			if(m/^Attach:\s+(.*?)\s*$/) {
+				push(@attach, $1);
+				next;
+			}
+
+			#s/!\[(.*?)\)\((.*?)\)/Image:$2 [$1]/;
+			if(($file)=m/<img.*?src="(.*?)"/i) {
+				if($ATTACHED{$file}) {
+					$base=basename($file);
+					s/"$file"/"cid:$ARG{'contentid'}.$base"/g;
+				}
+			}
+
+			if(m{^#begin(?! alternative)}) {
+				$begin=$i;
+			}
+			if(m{^#(end(?! \(alternative\))|<application/pgp-signature)}) {
+				$end=$i unless($end);
+			}
+
+			push(@email, $_);
+			if(m/^--------/) {
+				$body=1;
+				$begin=$i;
+			}
+
+			$i++;
+		}
+		close($msg);
+
+		$end=scalar(@email) unless(defined($end));
+
+		if(@attach) {
+			splice(@email, $begin+1, 0, "#begin\n");
+			$end++;
+			foreach my $file (@attach) {
+				splice(@email, $end, 0, &attach($file));
+				$end++;
+			}
+			splice(@email, $end, 0, "#end (main)\n");
+		}
+
+		open2($mime, $mh, $MH{'buildmimeproc'}, @_, '-');
+		print $mh @email;
+		close($mh);
+
+		open($msg, '>', $MH{'draft'});
+		while(<$mime>) {
+			print $msg $_;
+			if(m|Content-Type: image/.*; name="(.*)"| && $ATTACHED{$1}) {
+				print $msg "Content-ID: <$ARG{'contentid'}.$1>\n";
+			}
+		}
+		close($mime);
+		close($msg);
+
+		if($SIGN && $ENCRYPT) {
+			if($SIGN<=$ENCRYPT) {
+				&gpg_sign;
+				&gpg_encrypt;
+			} else {
+				&gpg_encrypt;
+				&gpg_sign;
+			}
+		} elsif($SIGN) {
+			&gpg_sign;
+		} elsif($ENCRYPT) {
+			&gpg_encrypt;
+		}
+
+		$MIME_PENDING=-1;
+	},
+
+	'format'	=> sub {
+		my(%arg)=();
+
+		return unless(&pandoc_ok);
+
+		GetOptionsFromArray(\@_, \%arg, 'format|f=s', 'list|l');
+
+		if($arg{'list'}) {
+			system('pandoc', '--list-input-formats');
+		} else {
+			&pandoc($arg{'format'} || $MH{'heynow-format'});
+		}
+	},
+
+	'display'	=> sub {
+		system($MH{'showproc'}, $MH{'altmsg'});
+	},
+
+	'list'	=> sub {
+		system($MH{'lproc'}, @_, $MH{'draft'});
+	},
+
+	'expand'	=> sub {
+		my($alias, $expand)=(IO::Handle->new, IO::Handle->new);
+		my(@recipients)=();
+		my(%arg)=();
+		my($header);
+		my($line);
+		local($_);
+
+		GetOptionsFromArray(\@_, \%arg, 'verbose|v', 'list|l');
+
+		open($alias, '<', $MH{'draft'});
+		if($arg{'list'}) {
+			close($expand);
+		} else {
+			open($expand, '>', $MH{'temp'});
+		}
+
+		while(<$alias>) {
+			if(m/^\s/ && $header=~m/^(To|Cc|Bcc|Dcc)$/i) {
+				push(@recipients, &parse_addrs($_));
+			} elsif(m/^[\w-]+:/) {
+				if(@recipients) {
+					$line=&wrap_head($header, &aliproc(@recipients));
+					print $expand $line;
+					print $line if($arg{'list'} || $arg{'verbose'});
+				} elsif($header) {
+					print $expand $header, ":\n";
+				}
+
+				if(m/^(To|Cc|Bcc|Dcc):\s*(.*)$/) {
+					$header=$1;
+					@recipients=&parse_addrs($2);
+				} else {
+					$header=undef;
+					@recipients=();
+					print $expand $_;
+				}
+			} elsif(m/^--------/) {
+				if($header && @recipients) {
+					$line=&wrap_head($header, &aliproc(@recipients));
+					print $expand $line;
+					print $line if($arg{'list'} || $arg{'verbose'});
+				}
+				print $expand $_;
+				last;
+			} else {
+				print $expand $_;
+			}
+		}
+
+		while(<$alias>) {
+			print $expand $_;
+		}
+
+		close($alias);
+		close($expand);
+
+		rename($MH{'temp'}, $MH{'draft'}) unless($arg{'list'});
+	},
+
+	'alias'	=> sub {
+		my($alias, $old)=(IO::Handle->new, IO::Handle->new);
+		my($aliasfile)=join('/', $ENV{'HOME'}, $MH{'path'}, $MH{'aliasfile'});
+		my($tempfile)=$aliasfile; $tempfile=~s|([^/]+)$|,$1|;
+		my(@recipients)=();
+		my(%arg)=();
+		local($_);
+
+		GetOptionsFromArray(\@_, \%arg,
+			'add|a', 'delete|d', 'edit|e', 'component|c|f=s');
+
+		if($arg{'add'}) {
+			open($alias, '>>', $aliasfile);
+			if($arg{'component'}) {
+				print $alias $_[0], ': ',
+					`$MH{'annoproc'} -draft -list -component $arg{'component'}`;
+			} else {
+				print $alias shift, ': ', join(', ', @_), "\n";
+			}
+			close($alias);
+		} elsif($arg{'delete'}) {
+			open($old, '<', $aliasfile);
+			open($alias, '>', $tempfile);
+
+			while(<$old>) {
+				next if(m/^\s*$_[0]\s*[:;]/);
+
+				print $alias $_;
+			}
+
+			close($alias);
+			close($old);
+
+			rename($tempfile, $aliasfile);
+		} elsif($arg{'edit'}) {
+			if(-r $aliasfile) {
+				system(split(m/\s+/, $MH{'editor'}), $aliasfile);
+			} else {
+				print "Cannot find alias file: $MH{'aliasfile'}\n";
+			}
+		} else {
+			system($MH{'aliproc'}, @_);
+		}
+
+	},
+
+	'send'	=> sub {
+		if($MIME_PENDING>0) {
+			$WHATNOW{'mime'}->();
+		}
+
+		system($MH{'sendproc'}, @_, $MH{'draft'});
+		unlink($MH{'draft'});
+		exit(0);
+	},
+	
+	's'		=> sub {
+		$WHATNOW{'send'}->(@_);
+	},
+
+	'push'	=> sub {
+		if($MIME_PENDING>0) {
+			$WHATNOW{'mime'}->();
+		}
+
+		system($MH{'sendproc'}, '-push', @_, $MH{'draft'});
+		unlink($MH{'draft'});
+		exit(0);
+	},
+
+	'whom'	=> sub {
+		system($MH{'whomproc'}, @_, $MH{'draft'});
+	},
+
+	'quit'	=> sub {
+		my(%arg)=();
+
+		GetOptionsFromArray(\@_, \%arg, 'delete|d');
+
+		if($arg{'delete'}) {
+			unlink($MH{'draft'});
+		} else {
+			print "whatnow: draft left on $MH{'draft'}\n";
+		}
+		exit(0);
+	},
+
+	'exit'	=> sub {
+		$WHATNOW{'quit'}->(@_);
+	},
+
+	'delete'		=> sub {
+		unlink($MH{'draft'});
+		exit(0);
+	},
+
+	'd'		=> sub {
+		$WHATNOW{'delete'}->(@_);
+	},
+
+	'cd'		=> sub {
+		my($path)=@_;
+
+		if(! $path) {
+			chdir($ENV{'HOME'});
+		} elsif(-d $path) {
+			chdir($path);
+		} elsif(-d join('/', $ENV{'HOME'}, $MH{'path'}, $path)) {
+			chdir(join('/', $ENV{'HOME'}, $MH{'path'}, $path));
+		} elsif(-d join('/', $ENV{'HOME'}, $path)) {
+			chdir(join('/', $ENV{'HOME'}, $path));
+		} else {
+			print "Cannot change to $path\n";
+		}
+	},
+
+	'pwd'	=> sub {
+		print Cwd::getcwd, "\n";
+	},
+
+	'ls'		=> sub {
+		system("ls @_ | $MH{'lproc'}");
+	},
+
+	'attach'	=> sub {
+		my($msg)=IO::Handle->new;
+		my(@email)=();
+		my(%arg)=();
+		local($_);
+
+		return unless(&mime_ok);
+
+		GetOptionsFromArray(\@_, \%arg, 'verbose|v');
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			if(m/^Attach:\s+(.*)$/) {
+				$ATTACHED{$1}=1;
+				$ATTACHED{basename($1)}=1;
+				$ATTACHED{Cwd::realpath($1)}=1;
+			}	
+
+			if(m/^--------/) {
+				foreach my $file (map(Cwd::realpath($_), @_)) {
+					if(-r $file) {
+						unless($ATTACHED{$file}) {
+							push(@email, "Attach: $file\n");
+							print "Attaching $file\n" if($arg{'verbose'});
+							$ATTACHED{$file}=1;
+							$ATTACHED{basename($file)}=1;
+						}
+					} else {
+						print "Cannot read file $file\n";
+					}
+				}
+				push(@email, $_);
+				last;
+			} else {
+				push(@email, $_);
+			}
+		}
+		while(<$msg>) {
+			push(@email, $_);
+		}
+		close($msg);
+
+		open($msg, '>', $MH{'draft'});
+		print $msg @email;
+		close($msg);
+	},
+
+	'detach'	=> sub {
+		my($msg)=IO::Handle->new;
+		my(@email)=();
+		my(%detach)=();
+		my(%arg)=();
+		my($i)=1;
+		local($_);
+
+		return unless(&mime_ok);
+
+		GetOptionsFromArray(\@_, \%arg, 'number|numeric|n');
+
+		foreach my $file (@_) {
+			$detach{$file}=1;
+			$detach{Cwd::realpath($file)}=1;
+		}
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			if(m/^Attach:\s+(.*)$/) {
+				next if($detach{$1} && !$arg{'number'});
+				next if($detach{$i++} && $arg{'number'});
+			}
+			push(@email, $_);
+			last if(m/^--------/);
+		}
+		while(<$msg>) {
+			push(@email, $_);
+		}
+		close($msg);
+
+		open($msg, '>', $MH{'draft'});
+		print $msg @email;
+		close($msg);
+	},
+
+	'alist'	=> sub {
+		my($msg)=IO::Handle->new;
+		my($i)=1;
+		my(%arg)=();
+		my($file);
+		local($_);
+
+		GetOptionsFromArray(\@_, \%arg, 'long|l', 'number|n');
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			if(($file)=m/^Attach:\s+(.*)$/) {
+				if($arg{'long'}) {
+					$file=Cwd::realpath($file);
+				} else {
+					$file=basename($file);
+				}
+
+				if($arg{'number'}) {
+					printf("%d       %s\n", $i++, $file);
+				} else {
+					printf("%s\n", $file);
+				}
+			}
+		}
+		close($msg);
+	},
+
+	'sign'	=> sub {
+		my($msg)=IO::Handle->new;
+		my(@envelope, @msg)=();
+		local($_);
+
+		return unless(&mime_ok);
+		return unless(&gpg_ok);
+
+		if($MH{'heynow-autoformat'} && !$FORMAT) {
+			$WHATNOW{'format'}->();
+		}
+
+		if($SIGN) {
+			print "Message already scheduled to be signed\n";
+			return;
+		} else {
+			$SIGN=$FORMAT+$ENCRYPT+1;
+		}
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			push(@envelope, $_);
+			last if(m/^--------/);
+		}
+		while(<$msg>) {
+			push(@msg, $_);
+		}
+		close($msg);
+
+		open($msg, '>', $MH{'draft'});
+		print $msg @envelope;
+		print $msg "#begin <>[Signed Message]\n";
+		print $msg @msg;
+		print $msg '#<application/pgp-signature; name="signature.asc" <>',
+			'[This is a digitally signed message part]', "\n";
+		print $msg "\n-----PGP SIGNATURE-----\n";
+		print $msg "#end (sign)\n";
+
+		close($msg);
+	},
+
+	'clearsign'	=> sub {
+		my($msg, $signed)=(IO::Handle->new, IO::Handle->new);
+		my($gpgin, $gpgout)=(IO::Handle->new, IO::Handle->new);
+		local($_);
+
+		$MH{'heynow-autoformat'}=0;
+
+		unless(&gpg_ok) {
+			print "gpg not working on the system, signing disabled\n";
+			return;
+		}
+
+		open($msg, '<', $MH{'draft'});
+		open($signed, '>', $MH{'temp'});
+		open2($gpgout, $gpgin,
+			'gpg', '--clearsign', '--digest-algo', $ARG{'mic'});
+
+		while(<$msg>) {
+			print $signed $_;
+
+			last if(m/^--------/);
+		}
+
+		while(<$msg>) {
+			print $gpgin $_;
+		}
+
+		close($msg);
+		close($gpgin);
+
+		while(<$gpgout>) {
+			print $signed $_;
+		}
+
+		close($gpgout);
+		close($signed);
+
+		rename($MH{'temp'}, $MH{'draft'});
+	},
+
+	'encrypt'	=> sub {
+		my($msg)=IO::Handle->new;
+		my(@envelope, @msg)=();
+		local($_);
+
+		return unless(&mime_ok);
+		return unless(&gpg_ok);
+
+		if($MH{'heynow-autoformat'} && !$FORMAT) {
+			$WHATNOW{'format'}->();
+		}
+
+		if($ENCRYPT) {
+			print "Message already scheduled to be encrypted\n";
+			return;
+		} else {
+			$ENCRYPT=$FORMAT+$SIGN+1;
+		}
+
+		open($msg, '<', $MH{'draft'});
+		while(<$msg>) {
+			push(@envelope, $_);
+			last if(m/^--------/);
+		}
+		while(<$msg>) {
+			push(@msg, $_);
+		}
+		close($msg);
+
+		open($msg, '>', $MH{'draft'});
+		print $msg @envelope;
+		print $msg "#begin <>[Encrypted Message]\n";
+		print $msg "#<application/pgp-encrypted <>\n\nVersion: 1\n";
+		print $msg "#<application/octet-stream <>\n\n";
+		print $msg @msg;
+		print $msg "#end (encrypt)\n";
+
+		close($msg);
+	},
+
+	'pubkey'	=> sub {
+		my($msg, $gpg)=(IO::Handle->new, IO::Handle->new);
+		my($key)=&gpg_default_key;
+		local($_);
+
+		return unless(&mime_ok);
+		return unless(&gpg_ok);
+
+		open($msg, '>>', $MH{'draft'});
+		open($gpg, '-|', 'gpg', '--export', '--armor', $key);
+
+		print $msg "#begin\n";
+		print $msg "#<application/pgp-keys; name=\"pubkey.asc\" [Pubkey]\n\n";
+		while(<$gpg>) {
+			print $msg $_;
+		}
+		print $msg "#end (pubkey)\n";
+
+		close($gpg);
+		close($msg);
+	},
+
+	'keyring'	=> sub {
+		my($msg, $gpg)=(IO::Handle->new, IO::Handle->new);
+		local($_);
+
+		return unless(&mime_ok);
+		return unless(&gpg_ok);
+
+		open($msg, '>>', $MH{'draft'});
+		open($gpg, '-|', 'gpg', '--export', '--armor');
+
+		print $msg "#begin\n";
+		print $msg "#<application/pgp-keys; name=\"pubring.asc\" [Keyring]\n\n";
+		while(<$gpg>) {
+			print $msg $_;
+		}
+		print $msg "#end (keyring)\n";
+
+		close($gpg);
+		close($msg);
+	},
+);
+
+=head2 Input Formats
+
+B<heynow> uses L<pandoc(1)> to perform format conversion.  Whatever
+input is provided will remain as the C<text/plain> input.  Pandoc
+will be used to convert that format to C<text/html>, and that will
+be the second part of the C<multipart/alternative> section of the
+message.
+
+The default format conversion is the pandoc extended markdown syntax.
+This can be changed with the C<-format> option, or by
+setting the C<heynow-format> option in your F<.mh_profile>.  The
+default value is C<heynow-format: markdown>.
+
+An additional I<syntax> is added on top of the input formats concerning
+signatures.  When the standard signature starting sequence (C<-- >) is
+found, remaining lines will keep their newline structure.  Depending
+on the capabilities of the input format syntax, the signature may need
+to be rendered in a fixed-width font; this is only done when necessary.
+
+=cut
+
+sub pandoc_ok {
+	unless(defined($PANDOC_OK)) {
+		`pandoc --version`;
+		$PANDOC_OK=int($?==0);
+		unless($PANDOC_OK) {
+			print "pandoc not is not functioning, formatting disabled\n";
+		}
+	}
+
+	return($PANDOC_OK);
+}
+
+my(%FORMAT_OPTIONS)=(
+	'latex'        =>	{
+						'eol' => '\\\\',
+					},
+	'markdown'     =>	{
+						'eol' => '\\',
+						'disable' => 'blank_before_blockquote',
+					},
+	'markdown_mmd' =>	{
+						'eol' => '\\',
+					},
+	'markdown_phpextra' =>	{
+						'bol' => '    ',
+					},
+	'markdown_strict' =>	{
+						'bol' => '    ',
+					},
+	'mediawiki'    =>	{
+						'eol' => '<br>',
+					},
+	'rst'          =>	{
+						'quote' => '    ',
+						'bol' => '| ',
+					},
+	't2t'          =>	{
+						'quote' => "\t",
+						'pre' => '```',
+						'post' => '```',
+					},
+	'twiki'        =>	{
+						'eol' => '%BR%',
+					},
+);
+
+sub pandoc {
+	my($format)=@_;
+	my($opt)=$FORMAT_OPTIONS{$format} || {};
+	my(@pre, @pd, @post, @html)=();
+	my($msg)=IO::Handle->new;
+	my($pd, $html)=(IO::Handle->new, IO::Handle->new);
+	my($breaks)=0;
+	my($line);
+	local($_);
+
+	return unless(&mime_ok);
+
+	unless($FORMAT) {
+		if($SIGN || $ENCRYPT) {
+			print "Cannot format a message after enabling security\n";
+			return;
+		}
+		$FORMAT=1;
+	}
+
+	if($opt->{'enable'}) {
+		if(ref($opt->{'enable'}) eq 'ARRAY') {
+			$format.=join('+', '', @{$opt->{'enable'}});
+		} else {
+			$format.='+'.$opt->{'enable'};
+		}
+	}
+	if($opt->{'disable'}) {
+		if(ref($opt->{'disable'}) eq 'ARRAY') {
+			$format.=join('-', '', @{$opt->{'disable'}});
+		} else {
+			$format.='-'.$opt->{'disable'};
+		}
+	}
+
+	open($msg, '<', $MH{'draft'});
+	while(<$msg>) {
+		push(@pre, $_);
+		last if(m/^--------/);
+	}
+	while(<$msg>) {
+		if(m/^#begin alternative/) {
+			push(@pre, @pd);
+			@pd=();
+		} elsif(m/^#<text\/html/) {
+			last;
+		} elsif(m/^#end \(alternative\)/) {
+			last;
+		} elsif(m/^#[^#]/) {
+			push(@post, $_);
+			last;
+		} else {
+			push(@pd, $_);
+		}
+	}
+	while(<$msg>) {
+		if(m/#end \(alternative\)/) {
+			@post=();
+		} else {
+			push(@post, $_);
+		}
+	}
+	close($msg);
+
+	open2($html, $pd, 'pandoc', '-f', $format);
+	foreach(@pd) {
+		$line=$_;
+
+		if($opt->{'quote'}) {
+			1 while($line=~s/^(($opt->{'quote'})*)> ?/$1$opt->{'quote'}/);
+		}
+
+		if(m/^[> ]*-- $/) {
+			print $pd $opt->{'pre'}, "\n" if($opt->{'pre'});
+			$breaks=1;
+		} elsif(m/^---+Original Message---+$/) {
+			$breaks=-1;
+		} elsif(m/^---+ Forwarded Message$/) {
+			print $pd $opt->{'post'}, "\n" if($opt->{'post'});
+			$breaks=-1;
+		} elsif(m/^---+ End of Forwarded Message$/) {
+			$breaks=0;
+		} elsif($breaks && m/^([> ]*)\s*$/) {
+			print $pd $opt->{'post'}, "\n" if($opt->{'post'});
+			$breaks--;
+		}
+		if($breaks) {
+			$line=~s/^/$opt->{'bol'}/ if($opt->{'bol'});
+			$line=~s/$/$opt->{'eol'}/ if($opt->{'eol'});
+		}
+		print $pd $line;
+	}
+	if($breaks) {
+		print $pd $opt->{'post'}, "\n" if($opt->{'post'});
+	}
+	close($pd);
+
+	while(<$html>) {
+		s|^<p>--<br( /)?>$|<p>-- <br />|;
+
+		push(@html, $_);
+	}
+	close($html);
+
+	open($msg, '>', $MH{'draft'});
+	print $msg @pre;
+	print $msg "#begin alternative\n";
+	print $msg @pd;
+	print $msg "#<text/html\n";
+	print $msg @html, "\n";
+	print $msg "#end (alternative)\n";
+	print $msg @post;
+	close($msg);
+}
+
+=head2 Alias Expansion
+
+It is sometimes scary to assume your alias file is perfect and all the
+correct people are receiving your email.  You may ask yourself, "Is the
+the Ben I am looking for?"  B<heynow> tries to make this easier by
+providing functions to expand and view aliases before your mail makes
+it to L<send(1)>.  You can use the C<alias> command manually, or you
+can set C<heynow-autoexpand> to C<1> in your F<.mh_profile> and B<heynow> will
+automatically expand aliases for you before each edit.
+
+This is especially useful if you use the C<-to> or C<-cc> command-line
+arguments to the L<comp(1)> program, assuming your F<components> file
+is configured to support those arguments.
+
+The standard MH alias interface is used, see L<ali(1)> for more information
+on MH aliases.
+
+The C<Blind List:> MH functionality is not supported by automatic alias
+expansion.  If your message contains aliases which use this funcitonality,
+they will be left alone and allow MH to expand the alias during its normal
+L<send(1)> operation.
+
+=cut
+
+sub aliproc {
+	my(@addresses)=();
+	my($ali)=IO::Handle->new;
+	local($_);
+
+	foreach my $addr (@_) {
+		$addr=~s/^[\s,]+//;
+		$addr=~s/[\s,]+$//;
+
+		if($addr=~m/^[\w-]+$/) {
+			open($ali, '-|', $MH{'aliproc'}, '-list', $addr);
+				while(<$ali>) {
+					chomp;
+					if(m/^Blind List:/) {
+						push(@addresses, $addr);
+						last;
+					}
+					push(@addresses, $_);
+				}
+			close($ali);
+		} else {
+			push(@addresses, $addr);
+		}
+	}
+	return(@addresses);
+}
+
+sub wrap_head {
+	my(@rows)=(shift.': '.shift);
+
+	foreach my $addr (@_) {
+		next unless($addr);
+
+		if(length($rows[-1])+length($addr) < 74) {
+			$rows[-1].=', '.$addr;
+		} else {
+			$rows[-1].=',';
+			push(@rows, '    '.$addr);
+		}
+	}
+
+	return(join("\n", @rows, ''));
+}
+
+
+=head2 GPG Support
+
+If the command C<gpg> is installed on your system, you have to option
+of using the C<pubkey>, C<keyring>, C<sign>, and C<encrypt> commands.
+This can be used to simplify the process of integrating GPG funcitonality
+into your email.  It is generally preferred to sign before encrypting when
+doing both, but either way is supported.
+
+=cut
+
+sub gpg_ok {
+	unless(defined($GPG_OK)) {
+		`gpg --list-keys`;
+		$GPG_OK=int($?==0);
+		unless($GPG_OK) {
+			print "gpg is not functional, OpenPGP features disabled\n";
+		}
+	}
+
+	return($GPG_OK);
+}
+
+sub parse_addrs {
+	my(@recipients)=();
+	my($addrs)=IO::Handle->new;
+	local($_);
+
+	open($addrs, '-|', $MH{'approc'}, @_);
+	while(<$addrs>) {
+		chomp;
+		push(@recipients, $_)
+	}
+	close($addrs);
+
+	return(@recipients);
+}
+
+sub attach {
+	my($file)=@_;
+	my($base)=basename($file);
+	my($type)=`$MH{'mimetypeproc'} $file`;
+
+	chomp($type);
+
+	sprintf("\n#%s ;name=\"%s\" %s\n", $type, $base, $file,);
+}
+
+sub gpg_default_key {
+	my($info, $null)=(IO::Handle->new, IO::Handle->new);
+
+	unless($ARG{'defaultkey'}) {
+		open2($info, $null, 'gpg', '--sign', '--logger-fd', '1', '--verbose');
+		close($null);
+		while(<$info>) {
+			if(m/^gpg: .* signature from: "([\dA-F]+)/i) {
+				$ARG{'defaultkey'}=$1;
+				last;
+			}
+		}
+		close($info);
+	}
+
+	return($ARG{'defaultkey'});
+}
+
+sub gpg_sign {
+	my($orig, $signed)=(IO::Handle->new, IO::Handle->new);
+	my($gpgin, $gpgout)=(IO::Handle->new, IO::Handle->new);
+	my($boundary)=undef;
+	my($newline)=0;
+	my(@buf)=();
+	my($found)=0;
+	my($signature);
+	local($_);
+
+	unlink($MH{'temp'}) if(-e $MH{'temp'});
+
+	open($orig, '<', $MH{'draft'});
+	open($signed, '>', $MH{'temp'});
+
+	#we only need to support mhbuild from nmh here:
+	while(<$orig>) {
+		if(m|^Content-Type: multipart/mixed; boundary="(-----.*)"|) {
+			$boundary=$1;
+			push(@buf, $_);
+		} elsif(@buf && m|^Content-Description: Signed Message|) {
+			$buf[0]='Content-Type: multipart/signed; '.
+				"micalg=\"pgp-$ARG{'mic'}\"; ".
+				'protocol="application/pgp-signature"; '.
+				"boundary=\"$boundary\"\n";
+			print $signed @buf, $_;
+			@buf=();
+			$found=1;
+		} elsif(@buf) {
+			push(@buf, $_);
+			if(m/^$/) {
+				print $signed @buf;
+				@buf=();
+			}
+		} elsif($boundary && $found && m/^--\Q$boundary\E$/) {
+			print $signed $_;
+			last;
+		} else {
+			print $signed $_;
+		}
+	}
+
+	if(eof($orig)) {
+		unlink($signed);
+		print "Section to sign not found\n";
+		return;
+	}
+
+	open2($gpgout, $gpgin,
+		'gpg', '--detach-sign', '--armor', '--digest-algo', $ARG{'mic'});
+
+	while(<$orig>) {
+		if(m/^\s*$/) {
+			$newline++;
+		} elsif(m/^--\Q$boundary\E$/) {
+			print $signed "\n"x$newline;
+			print $signed $_;
+
+			last;
+		} else {
+			print $signed "\n"x$newline;
+			print $signed $_;
+
+			s/\s+$//s;
+			print $gpgin "\r\n"x$newline;
+			print $gpgin $_, "\r\n";
+
+			$newline=0;
+		}
+	}
+
+	close($gpgin);
+	$signature=join('', <$gpgout>);
+	$signature=~s/^\s+//s;
+	$signature=~s/\s+$//s;
+	close($gpgout);
+
+	while(<$orig>) {
+		s/-----PGP SIGNATURE-----/$signature/;
+
+		print $signed $_;
+	}
+
+	print $signed "\n";
+	close(signed);
+	close($orig);
+
+	rename($MH{'temp'}, $MH{'draft'});
+}
+
+sub gpg_encrypt {
+	my($orig, $encrypted)=(IO::Handle->new, IO::Handle->new);
+	my($gpgin, $gpgout)=(IO::Handle->new, IO::Handle->new);
+	my($boundary)=undef;
+	my(@buf)=();
+	my(@recipients)=();
+	my($header)=undef;
+	local($_);
+
+	unlink($MH{'temp'}) if(-e $MH{'temp'});
+
+	open($orig, '<', $MH{'draft'});
+	open($encrypted, '>', $MH{'temp'});
+
+	#we only need to support mhbuild from nmh here:
+	while(<$orig>) {
+		if(m/^([\w-]+):/) {
+			$header=$1;
+		}
+
+		if(m|^Content-Type: multipart/mixed; boundary="(-----.*)"|) {
+			$boundary=$1;
+			push(@buf, $_);
+		} elsif(@buf && m|^Content-Description: Encrypted Message|) {
+			$buf[0]='Content-Type: multipart/encrypted; '.
+				'protocol="application/pgp-encrypted"; '.
+				"boundary=\"$boundary\"\n";
+			print $encrypted @buf, $_;
+			@buf=();
+		} elsif(@buf) {
+			push(@buf, $_);
+			if(m/^$/) {
+				print $encrypted @buf;
+				@buf=();
+			}
+		} elsif(m|^Content-Type: application/octet-stream|) {
+			print $encrypted $_, "\n";
+			last;
+		} elsif(m/^(To|Cc|Bcc|Dcc): (.*)$/i) {
+			print $encrypted $_;
+			push(@recipients, &parse_addrs($2));
+		} elsif(m/^\s/ && $header=~m/^(To|Cc|Bcc|Dcc)$/i) {
+			print $encrypted $_;
+			push(@recipients, &parse_addrs($_));
+		} else {
+			print $encrypted $_;
+		}
+	}
+
+	if(eof($orig)) {
+		unlink($encrypted);
+		print "Section to encrypt not found\n";
+		return;
+	}
+
+	open2($gpgout, $gpgin, 'gpg', '--encrypt', '--armor',
+		map(('-r' => $_), @recipients));
+
+	while(<$orig>) {
+		unless(m/^$/ || m/^--\Q$boundary\E-*$/) {
+			print $gpgin $_;
+			last;
+		}
+	}
+
+	while(<$orig>) {
+		if(m/^--\Q$boundary\E--$/) {
+			last;
+		} else {
+			print $gpgin $_;
+		}
+	}
+
+	close($gpgin);
+	while(<$gpgout>) {
+		print $encrypted $_;
+	}
+	close($gpgout);
+	print $encrypted "\n--$boundary--\n"; #we 'last'ed on this earlier!
+
+	while(<$orig>) {
+		print $encrypted $_;
+	}
+
+	close(encrypted);
+	close($orig);
+
+	rename($MH{'temp'}, $MH{'draft'});
+}
+
+=head2 Interface
+
+The default interface (including the prompt) looks the same as
+in the standard nmh implementation.  If your system contains
+the L<Term::ReadLine::Gnu(3pm)> package, then you will have
+command and file tab completion.
+
+B<heynow> also supports partial commands.  If a command's
+characters match the initial part of only one command, then
+that command is run for you.  If you look, you should notice
+that this works with just one character for most commands.
+
+=cut
+
+$PROMPT->ornaments(0);
+$PROMPT->Attribs->{'attempted_completion_function'}=sub {
+	my($text, $line, $start, $end)=@_;
+	my(@matches)=();
+
+	unless(@matches=grep(m/^$text/, keys(%WHATNOW))) {
+		@matches=();
+	}
+	grep(m/^$text/, keys(%WHATNOW));
+};
+
+$WHATNOW{'edit'}->() unless($ARG{'noedit'});
+
+&mime_ok if($MH{'heynow-autoformat'});
+
+while(1) {
+	my($input)=$PROMPT->readline($ARG{'prompt'});
+	my($cmd, @args)=split(m/\s+/, $input);
+
+	if(!defined($input)) {
+		$WHATNOW{'quit'}->();
+	} elsif(!$input) {
+		$WHATNOW{'help'}->();
+	} elsif(exists($WHATNOW{$cmd})) {
+		$WHATNOW{$cmd}->(@args);
+	} elsif(grep(m/^$cmd/, keys(%WHATNOW))==1) {
+		($cmd)=grep(m/^$cmd/, keys(%WHATNOW));
+		$WHATNOW{$cmd}->(@args);
+	} else {
+		print " -$cmd unknown. Hit <CR> for help.\n";
+	}
+}
+
+=head1 SEE ALSO
+
+L<whatnow(1)>, L<pandoc(1)>, L<gpg(1)>, L<ali(1)>, L<mh-profile(5)>
+
+=head1 AUTHOR
+
+William Totten
+
+=head1 LICENSE
+
+BSD 3-Clause License
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2017, William Totten
+  All rights reserved.
+  
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+  
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+  
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=cut
+

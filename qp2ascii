@@ -1,0 +1,310 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+qp2ascii - Convert Quoted-Printable strings to 7-bit flat ASCII
+
+=cut
+
+my($VERSION)='1.0';
+
+use Getopt::Long;
+use Pod::Usage;
+use Text::Wrap;
+$Text::Wrap::columns = 79;
+
+=head1 SYNOPSIS
+
+qp2ascii [file1] [file2] [...]
+
+=head2 Options
+
+=over 8
+
+=item -v or -version
+
+Print version and exit
+
+=item -h or -? or -help
+
+print this short help, then exit.
+
+=item -H or -manual
+
+Print the full manual, then exit.
+
+=item -L or -license
+
+Print the software license, then exit.
+
+=back
+
+=cut
+
+my(@OPTIONS)=qw(
+	version|v
+	help|h
+	manual|H
+	license|L
+);
+my(%ARG)=();
+
+Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
+unless(GetOptions(\%ARG, @OPTIONS)) {
+     pod2usage(-verbose => 1, -exitval => 1);
+} 
+
+if($ARG{'version'}) {
+	print basename($0), ' ', $VERSION, "\n";
+	exit(0);
+} elsif($ARG{'help'}) {
+	pod2usage(-verbose => 1, -exitval => 0);
+} elsif($ARG{'manual'}) {
+	pod2usage(-verbose => 2, -exitval => 0);
+} elsif($ARG{'license'}) {
+	pod2usage(-verbose => 99, -exitval => 0,
+		-sections => ['LICENSE', 'COPYRIGHT']);
+}
+
+=head1 DESCRIPTION
+
+B<qp2ascii> converts Quoted-Printable and Q-Encoded strings to 7-bit flat
+ascii, which may not be the original source.  8-bit messages will have
+common upper bit characters translated into a 7-bit compliant representation.
+
+=cut
+
+my($skip)=join('|',
+	'^Content-ID: ',
+	'^Content-Disposition: ',
+	'^Content-Type: ',
+	'^Content-Transfer-Encoding: ',
+	'^\s*$',
+);
+
+=pod
+
+The translation tables are best approximations and will normally
+work very well.  It is entirely possible that edge cases exist.
+
+=cut
+
+my(%mapping)=qw(
+	-	=AD,=E2=80=93,=E2=81=BB,=E2=82=8B
+	--	=E2=80=94
+	---	=E2=80=95
+	'	=B0,=B4,=C2=B4,=E2=80=99
+	`	=E2=80=98
+	,	=E2=80=9A
+	"	=A8,=E2=80=9C,=E2=80=9E
+	,,	=E2=80=9E
+	++	=E2=80=A1
+	*	=E2=80=A2
+	...	=E2=80=A6
+	$	=A4
+	%o	=E2=80=B0
+	<	=E2=80=B9
+	>	=E2=80=BA
+	0	=D8,=F8,=E2=81=B0,=E2=82=80
+	1	=B9,=C2=B9,=E2=81=B1,=E2=82=81
+	2	=B2,=C2=B2,=E2=81=B2,=E2=82=82
+	3	=B3,=C2=B3,=E2=81=B3,=E2=82=83
+	4	=E2=81=B4,=E2=82=84
+	5	=E2=81=B5,=E2=82=85
+	6	=E2=81=B6,=E2=82=86
+	7	=E2=81=B7,=E2=82=87
+	8	=E2=81=B8,=E2=82=88
+	9	=E2=81=B9,=E2=82=89
+	+	=E2=80=A0,=E2=82=8A,=E2=81=BA
+	-	=AD,=E2=81=BB,=E2=82=8B
+	*	=B7,=D7,=C2=B7,=C3=97
+	/	=F7,=C3=B7
+	=	=E2=81=BC,=E2=82=8C,=E2=80=97
+	(	=E2=81=BD,=E2=82=8D
+	)	=E2=81=BE,=E2=82=8E
+	n	=E2=81=BF
+	tm	=E2=84=A2
+	1/8	=E2=85=9B
+	1/4	=BC,=C2=BC
+	3/8	=E2=85=9C
+	1/2	=BD,=C2=BD
+	5/8	=E2=85=9D
+	3/4	=BE,=C2=BE
+	7/8	=E2=85=9E
+	!	=A1,=AC,=C2=A1,=C2=AC
+	?	=BF,=C2=BF
+	#	=A3,=C2=A3
+	,	=A6,=C2=A6
+	<<	=AB,=C2=AB
+	>>	=BB,=C2=BB
+	^	=AF
+	A	=C0,=C1,=C2,=C3,=C4,=C5,=C3=80,=C3=81,=C3=82,=C3=83,=C3=84,=C3=85
+	a	=E0,=E1,=E2,=E3,=E4,=E5,=C3=A0,=C3=A1,=C3=A2,=C3=A3,=C3=A4,=C3=A5
+	AE	=C6,=C3=86
+	ae	=E6,=C3=A6
+	C	=C7
+	c	=A2,=E7,=C2=A2
+	(c)	=A9,=C2=A9
+	E	=C8,=C9,=CA,=CB,=C3=88,=C3=89,=C3=8A,=C3=8B
+	e	=E8,=E9,=EA,=EB,=C3=A8,=C3=A9,=C3=AA,=C3=AB
+	EUR	=E2=82=AC
+	I	=CC,=CD,=CE,=CF,=C3=8C,=C3=8D,=C3=8E,=C3=8F
+	i	=EC,=ED,=EE,=EF,=C3=AC,=C3=AD,=C3=AE,=C3=AF
+	N	=D1,=C3=91
+	n	=F1,=C3=B1
+	O	=D2,=D3,=D4,=D5,=D6,=C3=92,=C3=93,=C3=94,=C3=95,=C3=96
+	o	=BA,=F2,=F3,=F4,=F5,=F6,=C2=BA,=C3=B2,=C3=B3,=C3=B4,=C3=B5,=C3=B6
+	(R)	=AE,=C2=AE
+	TH	=D0,=DE,=C3=90,=C3=9E
+	th	=F0,=FE,=C3=B0,=C3=BE
+	U	=D9,=DA,=DB,=DC,=C3=99,=C3=9A,=C3=9B,=C3=9C
+	u	=B5,=F9,=FA,=FB,=FC,=FD,=FF,=C2=B5,=C3=B9,=C3=BA,=C3=BB,=C3=BC
+	Y	=DD,=C3=9D
+	y	=FD,=C3=BD
+	YEN	=A5
+);
+$mapping{''}='=0D,=E2=80=8D';
+$mapping{' '}=' =$|=A0|=C2=A0';
+
+my(%w1252)=qw(
+	,	=82
+	,,	=84
+	'	=91,=92
+	"	=93,=94
+	...	=85
+	~	=98
+	*	=95
+	-	=96,=97
+	+	=86
+	++	=87
+	^	=88
+	<	=8B
+	>	=9B
+	%o	=89
+	EUR	=80
+	f	=83
+	OE	=8B
+	oe	=9B
+	tm	=99
+	S	=8A
+	s	=9A
+	Y	=9F
+	Z	=8E
+	z	=9E
+);
+
+my(%xtable);
+my($add);
+my($line);
+
+sub q_encoding {
+	s/=([\dA-F]{2})/chr(hex($1))/eg if(s/=\?.*?\?q\?(.*?)\?=/$1/ig);
+}
+
+sub quoted_printable {
+	foreach my $qp (sort({length($b) <=> length($a) } keys(%xtable))) {
+		s/$qp/$xtable{$qp}/sg;
+	}
+	s/=([\dA-F]{2})/chr(hex($1))/eg;
+}
+
+sub update_mapping {
+	my(%map)=@_;
+	foreach my $char (keys(%map)) {
+		foreach my $seq (split(',', $map{$char})) {
+			$xtable{$seq}=$char;
+		}
+	}
+}
+
+&update_mapping(%mapping);
+
+while(<>) {
+	&update_mapping(%w1252) if(m/Windows-1252/i);
+
+	&q_encoding;
+
+	print;
+	last if(m/^$/);
+}
+
+while(<>) {
+	&update_mapping(%w1252) if(m/Windows-1252/i);
+
+	&q_encoding;
+
+	if(m/$skip/io) {
+		print;
+		next;
+	}
+
+	while(s/(?=[^ ])=\n//s) {
+		$add=<>;
+		$add=~s/^[ >]*> //;
+		$_.=$add;
+	}
+	&quoted_printable;
+
+
+	m/^([ \t>]*)(.*)$/s;
+	$line=wrap("$1", $1, $2);
+	#$line=~s/\n\n/\n/sg;
+	print $line;
+}
+
+=head1 BUGS
+
+This program is not a standards-compliant, content aware, application for
+producing perfect conversions.  This program is a fast and dirty, brute-force
+alternative.  It works very well in practice (even though it completely ignores
+the difference between UTF-8, ISO-8859-1, and other encodins), and is unlikely
+to mess things up for you.
+
+=head1 SEE ALSO
+
+L<perl(1)>, L<Text::Wrap>, L<ascii(7)>
+
+=head1 AUTHOR
+
+William Totten
+
+=cut
+
+=head1 LICENSE
+
+BSD 3-Clause License
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2017, William Totten
+  All rights reserved.
+  
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+  
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+  
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=cut
+

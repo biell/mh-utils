@@ -1,0 +1,192 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+html2msg - Use the best technique to convert HTML email to plain text email
+
+=cut
+
+my($VERSION)='0.9';
+
+use IO::Handle;
+use Getopt::Long;
+use Pod::Usage;
+
+my($SIZE)=0;
+
+=head1 SYNOPSIS
+
+html2msg [-I encoding] [file]
+
+=head2 Options
+
+=over 8
+
+=item -I <charset> or -input-encoding=<charset>
+
+Specify the input encoding character set to use.
+
+=item -v or -version
+
+Print version and exit
+
+=item -h or -? or -help
+
+print this short help, then exit.
+
+=item -H or -manual
+
+Print the full manual, then exit.
+
+=item -L or -license
+
+Print the software license, then exit.
+
+=back
+
+=cut
+
+my(@OPTIONS)=qw(
+	input-encoding|iencoding|input_encoding|I=s
+	version|v
+	help|h
+	manual|H
+	license|L
+);
+my(%ARG)=();
+
+Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
+unless(GetOptions(\%ARG, @OPTIONS)) {
+     pod2usage(-verbose => 1, -exitval => 1);
+} 
+
+if($ARG{'version'}) {
+	print basename($0), ' ', $VERSION, "\n";
+	exit(0);
+} elsif($ARG{'help'}) {
+	pod2usage(-verbose => 1, -exitval => 0);
+} elsif($ARG{'manual'}) {
+	pod2usage(-verbose => 2, -exitval => 0);
+} elsif($ARG{'license'}) {
+	pod2usage(-verbose => 99, -exitval => 0,
+		-sections => ['LICENSE', 'COPYRIGHT']);
+}
+
+=head1 DESCRIPTION
+
+Reading HTML based email on a terminal is a spotty proposition, and there
+really isn't a "one size fits all" solution.  B<html2msg> takes a
+two sizes is better than one approach to this problem.  If you are reading
+email on a terminal, you probably are comfortable with standard terminal 
+characteristics and something called "markdown".  Shorter, less complicated
+messages look better, and are easier to follow when converted from HTML
+to markdown than they would be by reading the straight text or HTML to
+screen rendering which occurs in text-based browsers.
+
+What B<html2msg> does is look at the message, and if it seems to be an
+OK candidate for L<pandoc(1)> to convert to markdown, it does that.
+Otherwise, it lets L<w3m(1)> render it.
+
+=cut
+
+sub markdown {
+	my(@pandoc)=qw(pandoc -f html -t markdown+pipe_tables);
+	my($md)=IO::Handle->new;
+	local($/)=undef;
+
+	open($md, '-|', @pandoc, @_);
+	$_=<$md>;
+	close($md);
+
+	s|\[(.*?)\]\{.*?\}|$1|sg;
+
+	s|&lt;<|<|ig;
+	s|>&gt;|>|ig;
+
+	s|&lt;|<|ig;
+	s|&gt;|>|ig;
+
+	s|</?div>\s*||ig;
+	s|</?div[>\s]+.*?>\s*||ig;
+
+	s|\\$||mg;
+	s|^[> ]+$||mg;
+	s|\n\s*?\n([> ]+)|\n$1\n$1|sg;
+
+	s|\s+$|\n\n|s;
+	print $_;
+}
+
+sub w3m {
+	my(@w3m)=qw(w3m -dump -o display_link_number=1 -o indent_incr=3 -T text/html);
+	my($txt)=IO::Handle->new;
+	my(@local)=();
+	local($/)=undef;
+
+	if($ARG{'input-encoding'}) {
+		push(@local, '-I', $ARG{'input-encoding'});
+	}
+
+	open($txt, '-|', @w3m, @local, @_);
+	$_=<$txt>;
+	close($txt);
+
+	print $_;
+}
+
+foreach my $file (@ARGV) {
+	$SIZE+=(-s $file);
+}
+
+if($SIZE > 4096) {
+	&w3m(@ARGV);
+} else {
+	&markdown(@ARGV);
+}
+
+=head1 SEE ALSO
+
+L<pandoc(1)>, L<w3m(1)>
+
+=head1 AUTHOR
+
+William Totten
+
+=head1 LICENSE
+
+BSD 3-Clause License
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2017, William Totten
+  All rights reserved.
+  
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+  
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+  
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=cut
+
