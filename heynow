@@ -10,6 +10,7 @@ my($VERSION)='0.9';
 
 use Getopt::Long qw(GetOptionsFromArray);
 use Term::ReadLine;
+use Text::ParseWords;
 use IO::Handle;
 use IPC::Open2;
 use File::Basename;
@@ -19,11 +20,11 @@ use Cwd;
 my($PROMPT)=Term::ReadLine->new('whatnow');
 
 my(@MH_SETTINGS)=qw(
-	path editor showproc lproc sendproc fileproc whomproc buildmimeproc
-	mimetypeproc aliasfile libdir aliproc annoproc approc
-	heynow-autoexpand heynow-format heynow-autoformat
+	path editor showproc lproc sendproc fileproc whomproc showmimeproc
+	buildmimeproc mimetypeproc aliasfile libdir aliproc annoproc approc
 );
-my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam @MH_SETTINGS`);
+my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
+	`mhparam -all; mhparam @MH_SETTINGS`);
 
 =head1 SYNOPSIS
 
@@ -65,9 +66,9 @@ Don't use a draft folder
 
 Use I<editor> as the editor of messages.
 
-=item -format type
+=item -markup type
 
-Use I<type> as the default format instead of the default of C<markdown>.
+Use I<type> as the markup type instead of the default of C<markdown>.
 Note that use of this value also overrides F<.mh_profile> settings.
 
 =item -noedit
@@ -100,7 +101,7 @@ my(@OPTIONS)=qw(
 	draftmessage=s
 	nodraftfolder
 	editor=s
-	format=s
+	markup=s
 	noedit
 	prompt=s
 	contentid=s
@@ -116,7 +117,7 @@ my(%ARG)=(
 
 my(%WHATNOW)=();
 my(%ATTACHED)=();
-my($FORMAT, $SIGN, $ENCRYPT, $MIME_PENDING)=(0, 0, 0, 0);
+my($MARKUP, $SIGN, $ENCRYPT, $MIME_PENDING)=(0, 0, 0, 0);
 my($GPG_OK, $PANDOC_OK)=(undef, undef);
 
 Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
@@ -145,12 +146,12 @@ if($ARG{'version'}) {
 }
 
 $MH{'editor'}=$ARG{'editor'} if($ARG{'editor'});
-$MH{'heynow-format'}=$ARG{'format'} || $MH{'heynow-format'} || 'markdown';
-$MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'} || $MH{'draft'};
+$MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'};
 $MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
 $MH{'aliproc'}='ali' unless($MH{'aliproc'});
 $MH{'annoproc'}='anno' unless($MH{'annoproc'});
 $MH{'approc'}="$MH{'libdir'}/ap" unless($MH{'approc'});
+$MH{'path'}=join('/', $ENV{'HOME'}, $MH{'path'});
 
 =head1 DESCRIPTION
 
@@ -172,6 +173,42 @@ of my composition.  The ability to integrate Markdown with email to
 create mail which looks good both as text and marked up to HTML is a
 major purpose for this program.
 
+=head2 Configuration
+
+The following entries in your F<.mh_profile> can affect the way
+B<heynow> works.
+
+=over 8
+
+=item heynow-automarkup
+
+One of the key benefits of B<heynow> is the ability to use
+L<pandoc(1)> to markup text input into HTML to be included
+as a multipart/alternative which works better on phones and
+other devices which benefit from the automatic reflow capabilities
+offered by HTML email.  When C<heynow-automarkup: 1> is entered
+into your F<.mh_profile>, this formatting will be enabled
+for all outgoing email without the need to request it.
+
+=item heynow-autoinclude
+
+When using L<repl(1)> to reply to mail, include the original message
+in the message template.  This is useful not just because it saves
+having to type C<-format> when invoking L<repl(1)>, but also because
+it is a more modern replacement for repl's methodology.  See
+L<Commands/include> below for more information. Set
+C<heynow-autoinclude: 1> in your F<.mh_profile> to enable this
+feature.
+
+=item heynow-command
+
+Here, I<command> is any of the internal B<heynow> commands which take
+arguments.  Those arguments can be specified here, for example
+C<heynow-edit: -expand> would ensure that mail aliases are always
+expanded before an edit occurs.
+
+=back
+
 =cut
 
 sub mime_ok {
@@ -189,18 +226,44 @@ sub mime_ok {
 The standard commands are implemented, and additional ones
 have been added.
 
+=cut
+
+sub get_options {
+	my($src, $args, $command, @options)=@_;
+
+	if($MH{"heynow-$command"}) {
+		unshift(@$src, shellwords($MH{"heynow-$command"}));
+	}
+	GetOptionsFromArray($src, $args, @options);
+	if(@$src && $src->[0]=~m/^-/) {
+		print "Unknown $command options: @$src\n";
+		return(undef);
+	} else {
+		return(1);
+	}
+}
+
 =head3 help [-l]
 
 Produce a help message on available commands.  With the C<-l> flag,
 the B<Commands> documentation section you are reading right now will
 be displayed.
 
-=head3 edit [<editor> <switches>]
+=head3 edit [-include] [-expand] [<editor> <switches>]
 
 Edit the current document.  By default, the default your nmh editor will be
 used.  If you wish to specify an alternate editor for this edit, you can
 specify that in the command as C<editor>, any assoicated C<switches> will
 also be specified with the command.
+
+If the C<-include> argument is present, then (when replying) the
+original message will be automatically included in the message
+body template.  Adding C<-include> to C<heynow-edit> in your
+F<.mh_profile> would be a mistake if you plan on running C<edit>
+more than once!
+
+If the C<-expand> argument is present, then any aliases will be
+expanded before editing the message.
 
 =head3 refile [<switches>] +folder
 
@@ -213,7 +276,7 @@ Turn an MH formated email into an RFC compliant MIME email.  This process
 will create multipart/alternative emails, emails with attachments, etc.
 All C<switches> go to L<mhbuild(1)>.
 
-=head3 format
+=head3 markup
 
 Treat the conent of the mail as if it were a text format syntax.  Use
 this content as the C<text/plain> portion of a C<multipart/alternative>
@@ -221,10 +284,10 @@ message.  Then, use L<pandoc(1)> to convert the syntax to HTML and
 incorporate that as the C<text/html> portion of the C<multipart/alternative>
 message.  L<pandoc(1)> must be installed.
 
-The default format is the L<pandoc(1)> extended markdown, but this can be
+The default markup is the L<pandoc(1)> extended markdown, but this can be
 changed via the command-line or in your F<.mh_profile> file using the
-setting C<heynow-format>.  You can schedule B<heynow> to automatically
-run C<format> for you on every email you send by setting C<heynow-autoformat>
+setting C<heynow-markup>.  You can schedule B<heynow> to automatically
+run C<markup> for you on every email you send by setting C<heynow-automarkup>
 to 1 in your F<.mh_profile>.
 
 =head3 display [<switches>]
@@ -236,6 +299,15 @@ this command does.
 =head3 list [<switches>]
 
 Print the current draft to the screen.
+
+=head3 include [-format file] [-full|-plain]
+
+Include the body of the message being replied to in the message.
+This is similar to calling `repl -format`, except that it only includes
+the viewable part of the message, not the whole thing (which often
+includes MIME headers).
+
+Default arguments may be set in F<.mh_profile> with C<heynow-include>.
 
 =head3 expand [-list|-verbose]
 
@@ -372,12 +444,13 @@ to send your entire keyring.
 		my(%arg)=();
 		my(@commands)=(
 			'help [-l] [command]',
-			'edit [<editor> <switches>]',
+			'edit [-include] [-expand] [<editor> <switches>]',
 			'refile [<switches>] +folder',
 			'mime [<switches>]',
-			'format [-format type] [-list]',
+			'markup [-markup type] [-list]',
 			'display [<switches>]',
 			'list [<switches>]',
+			'include [-format file] [-full|-plain]',
 			'expand [-list|-verbose]',
 			'alias [-add|-delete|-edit] [name] [address-list|[-component field]]',
 			'send [<switches>]',
@@ -398,7 +471,7 @@ to send your entire keyring.
 			'keyring',
 		);
 
-		GetOptionsFromArray(\@_, \%arg, 'long|l');
+		&get_options(\@_, \%arg, 'help', 'long!|l') || return;
 
 		if($arg{'long'}) {
 			pod2usage(
@@ -413,12 +486,21 @@ to send your entire keyring.
 	},
 
 	'edit'	=> sub {
-		$WHATNOW{'expand'}->() if($MH{'heynow-autoexpand'});
+		my(%arg)=();
+		my(@options)=qw(
+			include|i!
+			expand|e!
+		);
+
+		&get_options(\@_, \%arg, 'edit', @options) || return;
+
+		$WHATNOW{'include'}->() if($arg{'include'});
+		$WHATNOW{'expand'}->() if($arg{'expand'});
 
 		if(@_) {
 			system(@_, $MH{'draft'});
 		} else {
-			system(split(m/\s+/, $MH{'editor'}), $MH{'draft'});
+			system(shellwords($MH{'editor'}), $MH{'draft'});
 		}
 	},
 
@@ -439,7 +521,7 @@ to send your entire keyring.
 
 		return unless(&mime_ok);
 
-		$WHATNOW{'format'}->() if($MH{'heynow-autoformat'});
+		$WHATNOW{'markup'}->() if($MH{'heynow-automarkup'});
 
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
@@ -532,26 +614,85 @@ to send your entire keyring.
 		$MIME_PENDING=-1;
 	},
 
-	'format'	=> sub {
+	'markup'	=> sub {
 		my(%arg)=();
 
 		return unless(&pandoc_ok);
 
-		GetOptionsFromArray(\@_, \%arg, 'format|f=s', 'list|l');
+		&get_options(\@_, \%arg, 'markup', 'markup|m=s', 'list|l!') || return;
 
 		if($arg{'list'}) {
 			system('pandoc', '--list-input-formats');
 		} else {
-			&pandoc($arg{'format'} || $MH{'heynow-format'});
+			&pandoc($arg{'markup'} || $ARG{'markup'} || 'markdown');
 		}
 	},
 
 	'display'	=> sub {
-		system($MH{'showproc'}, $MH{'altmsg'});
+		system($MH{'showproc'}, $MH{'altmsg'} || $MH{'draft'});
 	},
 
 	'list'	=> sub {
 		system($MH{'lproc'}, @_, $MH{'draft'});
+	},
+
+	'include' => sub {
+		my($mhshow, $mhlin, $mhlout, $draft)=map(IO::Handle->new, 1..4);
+		my($sysreply)='/etc/nmh/mhl.reply';
+		my($usrreply)=join('/', $MH{'path'}, 'mhl.reply');
+		my($arg)=();
+		my(@options)=qw(
+			format|f=s
+			full|F!
+			plain|p!
+		);
+		my($r, $l);
+		my($reply);
+
+		return unless($MH{'altmsg'}); #Not a repl
+
+		&get_options(\@_, \%arg, 'include', @options) || return;
+
+		if($arg{'format'}) {
+			$reply=$arg{'format'};
+		} elsif(-r $usrreply) {
+			$reply=$usrreply;
+		} elsif(-r $sysreply) {
+			$reply=$sysreply;
+		} else {
+			print "Cannot file a valid mhl.reply file\n";
+			return;
+		}
+
+		if($arg{'full'}) {
+			open($mhlout, '-|', $MH{'showproc'},
+				'-form', $reply, $MH{'altmsg'});
+			open($draft, '>>', $MH{'draft'});
+		} elsif($arg{'plain'}) {
+			open($mhshow, '-|', $MH{'showmimeproc'},
+				'-type', 'text/plain', '-file', $MH{'altmsg'});
+			open2($mhlout, $mhlin, $MH{'showproc'}, '-form', $reply);
+			open($draft, '>>', $MH{'draft'});
+
+			print $mhlin ( <$mhshow> );
+
+			close($mhshow);
+			close($mhlin);
+		} else {
+			open($mhshow, '-|', $MH{'showmimeproc'}, '-file', $MH{'altmsg'});
+			open2($mhlout, $mhlin, $MH{'showproc'}, '-form', $reply);
+			open($draft, '>>', $MH{'draft'});
+
+			print $mhlin ( <$mhshow> );
+
+			close($mhshow);
+			close($mhlin);
+		}
+
+		print $draft ( <$mhlout> );
+
+		close($mhlout);
+		close($draft);
 	},
 
 	'expand'	=> sub {
@@ -562,7 +703,7 @@ to send your entire keyring.
 		my($line);
 		local($_);
 
-		GetOptionsFromArray(\@_, \%arg, 'verbose|v', 'list|l');
+		&get_options(\@_, \%arg, 'expand', 'verbose|v!', 'list|l!') || return;
 
 		open($alias, '<', $MH{'draft'});
 		if($arg{'list'}) {
@@ -616,14 +757,14 @@ to send your entire keyring.
 
 	'alias'	=> sub {
 		my($alias, $old)=(IO::Handle->new, IO::Handle->new);
-		my($aliasfile)=join('/', $ENV{'HOME'}, $MH{'path'}, $MH{'aliasfile'});
+		my($aliasfile)=join('/', $MH{'path'}, $MH{'aliasfile'});
 		my($tempfile)=$aliasfile; $tempfile=~s|([^/]+)$|,$1|;
 		my(@recipients)=();
 		my(%arg)=();
 		local($_);
 
-		GetOptionsFromArray(\@_, \%arg,
-			'add|a', 'delete|d', 'edit|e', 'component|c|f=s');
+		&get_options(\@_, \%arg, 'alias',
+			'add|a', 'delete|d', 'edit|e', 'component|c|f=s') || return;
 
 		if($arg{'add'}) {
 			open($alias, '>>', $aliasfile);
@@ -650,7 +791,7 @@ to send your entire keyring.
 			rename($tempfile, $aliasfile);
 		} elsif($arg{'edit'}) {
 			if(-r $aliasfile) {
-				system(split(m/\s+/, $MH{'editor'}), $aliasfile);
+				system(shellwords($MH{'editor'}), $aliasfile);
 			} else {
 				print "Cannot find alias file: $MH{'aliasfile'}\n";
 			}
@@ -691,7 +832,7 @@ to send your entire keyring.
 	'quit'	=> sub {
 		my(%arg)=();
 
-		GetOptionsFromArray(\@_, \%arg, 'delete|d');
+		&get_options(\@_, \%arg, 'quit', 'delete|d!') || return;
 
 		if($arg{'delete'}) {
 			unlink($MH{'draft'});
@@ -721,8 +862,8 @@ to send your entire keyring.
 			chdir($ENV{'HOME'});
 		} elsif(-d $path) {
 			chdir($path);
-		} elsif(-d join('/', $ENV{'HOME'}, $MH{'path'}, $path)) {
-			chdir(join('/', $ENV{'HOME'}, $MH{'path'}, $path));
+		} elsif(-d join('/', $MH{'path'}, $path)) {
+			chdir(join('/', $MH{'path'}, $path));
 		} elsif(-d join('/', $ENV{'HOME'}, $path)) {
 			chdir(join('/', $ENV{'HOME'}, $path));
 		} else {
@@ -746,7 +887,7 @@ to send your entire keyring.
 
 		return unless(&mime_ok);
 
-		GetOptionsFromArray(\@_, \%arg, 'verbose|v');
+		&get_options(\@_, \%arg, 'attach', 'verbose|v!') || return;
 
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
@@ -795,7 +936,7 @@ to send your entire keyring.
 
 		return unless(&mime_ok);
 
-		GetOptionsFromArray(\@_, \%arg, 'number|numeric|n');
+		&get_options(\@_, \%arg, 'detach', 'number|numeric|n') || return;
 
 		foreach my $file (@_) {
 			$detach{$file}=1;
@@ -828,7 +969,7 @@ to send your entire keyring.
 		my($file);
 		local($_);
 
-		GetOptionsFromArray(\@_, \%arg, 'long|l', 'number|n');
+		&get_options(\@_, \%arg, 'alist', 'long|l!', 'number|n!') || return;
 
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
@@ -857,15 +998,15 @@ to send your entire keyring.
 		return unless(&mime_ok);
 		return unless(&gpg_ok);
 
-		if($MH{'heynow-autoformat'} && !$FORMAT) {
-			$WHATNOW{'format'}->();
+		if($MH{'heynow-automarkup'} && !$MARKUP) {
+			$WHATNOW{'markup'}->();
 		}
 
 		if($SIGN) {
 			print "Message already scheduled to be signed\n";
 			return;
 		} else {
-			$SIGN=$FORMAT+$ENCRYPT+1;
+			$SIGN=$MARKUP+$ENCRYPT+1;
 		}
 
 		open($msg, '<', $MH{'draft'});
@@ -895,7 +1036,7 @@ to send your entire keyring.
 		my($gpgin, $gpgout)=(IO::Handle->new, IO::Handle->new);
 		local($_);
 
-		$MH{'heynow-autoformat'}=0;
+		$MH{'heynow-automarkup'}=0;
 
 		unless(&gpg_ok) {
 			print "gpg not working on the system, signing disabled\n";
@@ -938,15 +1079,15 @@ to send your entire keyring.
 		return unless(&mime_ok);
 		return unless(&gpg_ok);
 
-		if($MH{'heynow-autoformat'} && !$FORMAT) {
-			$WHATNOW{'format'}->();
+		if($MH{'heynow-automarkup'} && !$MARKUP) {
+			$WHATNOW{'markup'}->();
 		}
 
 		if($ENCRYPT) {
 			print "Message already scheduled to be encrypted\n";
 			return;
 		} else {
-			$ENCRYPT=$FORMAT+$SIGN+1;
+			$ENCRYPT=$MARKUP+$SIGN+1;
 		}
 
 		open($msg, '<', $MH{'draft'});
@@ -1012,25 +1153,31 @@ to send your entire keyring.
 		close($gpg);
 		close($msg);
 	},
+
+	'showenv' => sub {
+		foreach my $key (sort(keys(%ENV))) {
+			printf("%-20s = %s\n", $key, $ENV{$key});
+		}
+	},
 );
 
-=head2 Input Formats
+=head2 Input Markup
 
-B<heynow> uses L<pandoc(1)> to perform format conversion.  Whatever
+B<heynow> uses L<pandoc(1)> to perform markup conversion.  Whatever
 input is provided will remain as the C<text/plain> input.  Pandoc
-will be used to convert that format to C<text/html>, and that will
+will be used to markup that format to C<text/html>, and that will
 be the second part of the C<multipart/alternative> section of the
 message.
 
-The default format conversion is the pandoc extended markdown syntax.
-This can be changed with the C<-format> option, or by
-setting the C<heynow-format> option in your F<.mh_profile>.  The
-default value is C<heynow-format: markdown>.
+The default markup conversion is the pandoc extended markdown syntax.
+This can be changed with the C<-markup> option, or by
+setting the C<heynow-markup> option in your F<.mh_profile>.  The
+default value is C<heynow-markup: -markup markdown>.
 
 An additional I<syntax> is added on top of the input formats concerning
 signatures.  When the standard signature starting sequence (C<-- >) is
 found, remaining lines will keep their newline structure.  Depending
-on the capabilities of the input format syntax, the signature may need
+on the capabilities of the input markup syntax, the signature may need
 to be rendered in a fixed-width font; this is only done when necessary.
 
 =cut
@@ -1040,14 +1187,14 @@ sub pandoc_ok {
 		`pandoc --version`;
 		$PANDOC_OK=int($?==0);
 		unless($PANDOC_OK) {
-			print "pandoc not is not functioning, formatting disabled\n";
+			print "pandoc not is not functioning, markup disabled\n";
 		}
 	}
 
 	return($PANDOC_OK);
 }
 
-my(%FORMAT_OPTIONS)=(
+my(%MARKUP_OPTIONS)=(
 	'latex'        =>	{
 						'eol' => '\\\\',
 					},
@@ -1082,8 +1229,8 @@ my(%FORMAT_OPTIONS)=(
 );
 
 sub pandoc {
-	my($format)=@_;
-	my($opt)=$FORMAT_OPTIONS{$format} || {};
+	my($markup)=@_;
+	my($opt)=$MARKUP_OPTIONS{$markup} || {};
 	my(@pre, @pd, @post, @html)=();
 	my($msg)=IO::Handle->new;
 	my($pd, $html)=(IO::Handle->new, IO::Handle->new);
@@ -1093,26 +1240,26 @@ sub pandoc {
 
 	return unless(&mime_ok);
 
-	unless($FORMAT) {
+	unless($MARKUP) {
 		if($SIGN || $ENCRYPT) {
-			print "Cannot format a message after enabling security\n";
+			print "Cannot markup a message after enabling security\n";
 			return;
 		}
-		$FORMAT=1;
+		$MARKUP=1;
 	}
 
 	if($opt->{'enable'}) {
 		if(ref($opt->{'enable'}) eq 'ARRAY') {
-			$format.=join('+', '', @{$opt->{'enable'}});
+			$markup.=join('+', '', @{$opt->{'enable'}});
 		} else {
-			$format.='+'.$opt->{'enable'};
+			$markup.='+'.$opt->{'enable'};
 		}
 	}
 	if($opt->{'disable'}) {
 		if(ref($opt->{'disable'}) eq 'ARRAY') {
-			$format.=join('-', '', @{$opt->{'disable'}});
+			$markup.=join('-', '', @{$opt->{'disable'}});
 		} else {
-			$format.='-'.$opt->{'disable'};
+			$markup.='-'.$opt->{'disable'};
 		}
 	}
 
@@ -1145,7 +1292,7 @@ sub pandoc {
 	}
 	close($msg);
 
-	open2($html, $pd, 'pandoc', '-f', $format);
+	open2($html, $pd, 'pandoc', '-f', $markup);
 	foreach(@pd) {
 		$line=$_;
 
@@ -1231,14 +1378,14 @@ sub aliproc {
 
 		if($addr=~m/^[\w-]+$/) {
 			open($ali, '-|', $MH{'aliproc'}, '-list', $addr);
-				while(<$ali>) {
-					chomp;
-					if(m/^Blind List:/) {
-						push(@addresses, $addr);
-						last;
-					}
-					push(@addresses, $_);
+			while(<$ali>) {
+				chomp;
+				if(m/^Blind List:/) {
+					push(@addresses, $addr);
+					last;
 				}
+				push(@addresses, $_);
+			}
 			close($ali);
 		} else {
 			push(@addresses, $addr);
@@ -1535,13 +1682,15 @@ $PROMPT->Attribs->{'attempted_completion_function'}=sub {
 	grep(m/^$text/, keys(%WHATNOW));
 };
 
+$WHATNOW{'include'}->() if($MH{'heynow-autoinclude'});
+
 $WHATNOW{'edit'}->() unless($ARG{'noedit'});
 
-&mime_ok if($MH{'heynow-autoformat'});
+&mime_ok if($MH{'heynow-automarkup'});
 
 while(1) {
 	my($input)=$PROMPT->readline($ARG{'prompt'});
-	my($cmd, @args)=split(m/\s+/, $input);
+	my($cmd, @args)=shellwords($input);
 
 	if(!defined($input)) {
 		$WHATNOW{'quit'}->();

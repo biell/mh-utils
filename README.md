@@ -14,7 +14,7 @@ The `heynow` program is a replacement for the default MH `whatnow` program.
 It provides a fully feature compatible (to nmh) interface at base, but
 extends the functionality in a number of notable ways.
 
-#### Input Formats
+#### Input Markup
 
 Email in the modern world is vastly different than it was when the
 RAND corporation first wrote MH in 1979.  At that time, the idea of
@@ -81,26 +81,6 @@ this functionality.
 
 N.B. Only the `gpg` program is supported at this time.
 
-stan
-----
-
-The `stan` program is a wrapper around the standard MH `scan` program.  It
-adds a threaded view to the normal `scan` output.  It is identical in
-behaviour to `scan` with the following two exceptions:
-
-  1. The output is threaded, with the subject indented based on what it
-     is in reply to, and the order of messages is rearranged to be in
-	threaded order.
-
-  2. The format (and thus resulting output) is set in `stan`, and not
-     changeable.  Because `stan` is a wrapper, it must know exactly what
-	is output from the underlying `scan` program, and so it must override
-	any customized formatting you normally have with `scan`.
-
-Other than these two differences, it supports all the same command-line
-arguments as `scan`, and they are, in fact, passed on to the underlying
-`scan` run unmodified.
-
 
 html2msg
 --------
@@ -148,6 +128,27 @@ The purpose of `qp2ascii` is to take that QP encoding, and make it
 about Quoted Printable is that the only character sequence to worry
 about is an equal (=) sign followed by 2 hexadecimal digits.  This
 3 character sequece shows up very infrequently in normal email, and
-so `qp2text` can normally be run against any text with a low chance
+so `qp2ascii` can normally be run against any text with a low chance
 of undesired alteration.
+
+
+stan
+----
+
+The `stan` program is a wrapper around the standard MH `scan` program.  It
+adds a threaded view to the normal `scan` output.  It is identical in
+behaviour to `scan` with the following two exceptions:
+
+  1. The output is threaded, with the subject indented based on what it
+     is in reply to, and the order of messages is rearranged to be in
+	threaded order.
+
+  2. The format (and thus resulting output) is set in `stan`, and not
+     changeable.  Because `stan` is a wrapper, it must know exactly what
+	is output from the underlying `scan` program, and so it must override
+	any customized formatting you normally have with `scan`.
+
+Other than these two differences, it supports all the same command-line
+arguments as `scan`, and they are, in fact, passed on to the underlying
+`scan` run unmodified.
 
