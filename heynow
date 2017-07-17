@@ -471,7 +471,7 @@ to send your entire keyring.
 			'keyring',
 		);
 
-		&get_options(\@_, \%arg, 'help', 'long!|l') || return;
+		&get_options(\@_, \%arg, 'help', 'long|l!') || return;
 
 		if($arg{'long'}) {
 			pod2usage(
