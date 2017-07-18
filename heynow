@@ -148,6 +148,7 @@ if($ARG{'version'}) {
 $MH{'editor'}=$ARG{'editor'} if($ARG{'editor'});
 $MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'};
 $MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
+$MH{'backup'}=$MH{'draft'}; $MH{'backup'}=~s|/([^/]+)$|/!$1|;
 $MH{'aliproc'}='ali' unless($MH{'aliproc'});
 $MH{'annoproc'}='anno' unless($MH{'annoproc'});
 $MH{'approc'}="$MH{'libdir'}/ap" unless($MH{'approc'});
@@ -240,6 +241,18 @@ sub get_options {
 		return(undef);
 	} else {
 		return(1);
+	}
+}
+
+sub backup_draft {
+	if(-r $MH{'draft'}) {
+		system('cp', $MH{'draft'}, $MH{'backup'});
+	}
+}
+
+sub restore_draft {
+	if(-r $MH{'backup'}) {
+		system('cp', $MH{'backup'}, $MH{'draft'});
 	}
 }
 
@@ -521,6 +534,8 @@ to send your entire keyring.
 
 		return unless(&mime_ok);
 
+		&backup_draft;
+
 		$WHATNOW{'markup'}->() if($MH{'heynow-automarkup'});
 
 		open($msg, '<', $MH{'draft'});
@@ -599,16 +614,26 @@ to send your entire keyring.
 
 		if($SIGN && $ENCRYPT) {
 			if($SIGN<=$ENCRYPT) {
-				&gpg_sign;
-				&gpg_encrypt;
+				unless(&gpg_sign && &gpg_encrypt) {
+					&restore_draft;
+					return;
+				}
 			} else {
-				&gpg_encrypt;
-				&gpg_sign;
+				unless(&gpg_encrypt && &gpg_sign) {
+					&restore_draft;
+					return;
+				}
 			}
 		} elsif($SIGN) {
-			&gpg_sign;
+			unless(&gpg_sign) {
+				&restore_draft;
+				return;
+			}
 		} elsif($ENCRYPT) {
-			&gpg_encrypt;
+			unless(&gpg_encrypt) {
+				&restore_draft;
+				return;
+			}
 		}
 
 		$MIME_PENDING=-1;
@@ -803,7 +828,7 @@ to send your entire keyring.
 
 	'send'	=> sub {
 		if($MIME_PENDING>0) {
-			$WHATNOW{'mime'}->();
+			$WHATNOW{'mime'}->() || return(undef);
 		}
 
 		system($MH{'sendproc'}, @_, $MH{'draft'});
@@ -817,7 +842,7 @@ to send your entire keyring.
 
 	'push'	=> sub {
 		if($MIME_PENDING>0) {
-			$WHATNOW{'mime'}->();
+			$WHATNOW{'mime'}->() || return(undef);
 		}
 
 		system($MH{'sendproc'}, '-push', @_, $MH{'draft'});
@@ -1276,9 +1301,6 @@ sub pandoc {
 			last;
 		} elsif(m/^#end \(alternative\)/) {
 			last;
-		} elsif(m/^#[^#]/) {
-			push(@post, $_);
-			last;
 		} else {
 			push(@pd, $_);
 		}
@@ -1485,6 +1507,7 @@ sub gpg_sign {
 	my(@buf)=();
 	my($found)=0;
 	my($signature);
+	my($pid);
 	local($_);
 
 	unlink($MH{'temp'}) if(-e $MH{'temp'});
@@ -1522,10 +1545,10 @@ sub gpg_sign {
 	if(eof($orig)) {
 		unlink($signed);
 		print "Section to sign not found\n";
-		return;
+		return(undef);
 	}
 
-	open2($gpgout, $gpgin,
+	$pid=open2($gpgout, $gpgin,
 		'gpg', '--detach-sign', '--armor', '--digest-algo', $ARG{'mic'});
 
 	while(<$orig>) {
@@ -1552,7 +1575,14 @@ sub gpg_sign {
 	$signature=join('', <$gpgout>);
 	$signature=~s/^\s+//s;
 	$signature=~s/\s+$//s;
+
 	close($gpgout);
+	waitpid($pid, 1);
+	if($?!=0) {
+		print "Signing failed.\n";
+		unlink($MH{'temp'});
+		return(undef);
+	}
 
 	while(<$orig>) {
 		s/-----PGP SIGNATURE-----/$signature/;
@@ -1574,6 +1604,7 @@ sub gpg_encrypt {
 	my(@buf)=();
 	my(@recipients)=();
 	my($header)=undef;
+	my($pid);
 	local($_);
 
 	unlink($MH{'temp'}) if(-e $MH{'temp'});
@@ -1617,12 +1648,12 @@ sub gpg_encrypt {
 	}
 
 	if(eof($orig)) {
-		unlink($encrypted);
 		print "Section to encrypt not found\n";
-		return;
+		unlink($MH{'temp'});
+		return(undef);
 	}
 
-	open2($gpgout, $gpgin, 'gpg', '--encrypt', '--armor',
+	$pid=open2($gpgout, $gpgin, 'gpg', '--encrypt', '--armor',
 		map(('-r' => $_), @recipients));
 
 	while(<$orig>) {
@@ -1645,6 +1676,12 @@ sub gpg_encrypt {
 		print $encrypted $_;
 	}
 	close($gpgout);
+	waitpid($pid, 1);
+	if($?!=0) {
+		print "Encryption failed.\n";
+		unlink($MH{'temp'});
+		return(undef);
+	}
 	print $encrypted "\n--$boundary--\n"; #we 'last'ed on this earlier!
 
 	while(<$orig>) {
@@ -1655,6 +1692,8 @@ sub gpg_encrypt {
 	close($orig);
 
 	rename($MH{'temp'}, $MH{'draft'});
+
+	return(1);
 }
 
 =head2 Interface
