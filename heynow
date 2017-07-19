@@ -15,6 +15,7 @@ use IO::Handle;
 use IPC::Open2;
 use File::Basename;
 use Pod::Usage;
+use POSIX;
 use Cwd;
 
 my($PROMPT)=Term::ReadLine->new('whatnow');
@@ -105,7 +106,7 @@ my(@OPTIONS)=qw(
 	noedit
 	prompt=s
 	contentid=s
-	defaultkey=s
+	defaultkey=s@
 	mic=s
 );
 my(%ARG)=(
@@ -411,11 +412,12 @@ of each file is listed.  With the C<-l> flag, the fully qualified name
 is listed.  With the C<-n> flag, each item is numbered.  This is especially
 helpful with C<detach> which can optionally take a number as an argument.
 
-=head3 sign
+=head3 sign [-key keyid|address]
 
 Use L<gpg(1)> to sign the message before sending using the OpenPGP standard
 for signed messages.  For the recipient to verify your signed message, they
-need to have a copy of your public key.
+need to have a copy of your public key.  Your default public key will be
+used unless you have specified an alternate with the C<-key> option.
 
 =head3 clearsign
 
@@ -434,12 +436,16 @@ Use L<gpg(1)> to encrypt the message before sending using the OpenPGP standard
 for encrypted messages.  You must have a copy of each of the recipients
 public keys to send a message this way.
 
-=head3 pubkey
+=head3 pubkey [-key keyid|address]
 
-Attach a copy of your public key to the message.  If you would like to
-start sending encrypted or signed message to and from another person,
-you need to exchange keys.  This command simplifies the process by
-attaching your primary keys public key in one command.
+Attach one ore more public keys from your keyring to this message.  If
+no key is specified, then your public key will be transferred.  You may
+specify the C<-key> option more than once to attach multiple keys.  The
+argument to C<-key> may be a Key ID or the email address of the key owner.
+
+If you would like to start sending encrypted or signed message to and from
+another person, you need to exchange keys.  This command simplifies the
+process by attaching your public key in one command.
 
 =head3 keyring
 
@@ -477,10 +483,10 @@ to send your entire keyring.
 			'attach [-v]',
 			'detach [-n]',
 			'(al)ist [-ln]',
-			'sign',
+			'sign [-key keyid|address]',
 			'clearsign',
 			'encrypt',
-			'pubkey',
+			'pubkey [-key keyid|address]',
 			'keyring',
 		);
 
@@ -1018,10 +1024,15 @@ to send your entire keyring.
 	'sign'	=> sub {
 		my($msg)=IO::Handle->new;
 		my(@envelope, @msg)=();
+		my(%arg)=( 'key' => [] );
 		local($_);
 
 		return unless(&mime_ok);
 		return unless(&gpg_ok);
+
+		&get_options(\@_, \%arg, 'pubkey', 'key|k=s@') || return;
+
+		@{$ARG{'defaultkey'}}=&gpg_keys(@{$arg{'key'}});
 
 		if($MH{'heynow-automarkup'} && !$MARKUP) {
 			$WHATNOW{'markup'}->();
@@ -1138,14 +1149,19 @@ to send your entire keyring.
 
 	'pubkey'	=> sub {
 		my($msg, $gpg)=(IO::Handle->new, IO::Handle->new);
-		my($key)=&gpg_default_key;
+		my(%arg)=( 'key' => [] );
+		my(@keys)=();
 		local($_);
 
 		return unless(&mime_ok);
 		return unless(&gpg_ok);
 
+		&get_options(\@_, \%arg, 'pubkey', 'key|k=s@') || return;
+
+		@keys=&gpg_keys(@{$arg{'key'}});
+
 		open($msg, '>>', $MH{'draft'});
-		open($gpg, '-|', 'gpg', '--export', '--armor', $key);
+		open($gpg, '-|', 'gpg', '--export', '--armor', @keys);
 
 		print $msg "#begin\n";
 		print $msg "#<application/pgp-keys; name=\"pubkey.asc\" [Pubkey]\n\n";
@@ -1481,22 +1497,51 @@ sub attach {
 	sprintf("\n#%s ;name=\"%s\" %s\n", $type, $base, $file,);
 }
 
-sub gpg_default_key {
+sub gpg_keys {
 	my($info, $null)=(IO::Handle->new, IO::Handle->new);
+	my($ap)=IO::Handle->new;
+	my(@who)=();
+	my(@keys)=();
+	local($_);
 
-	unless($ARG{'defaultkey'}) {
-		open2($info, $null, 'gpg', '--sign', '--logger-fd', '1', '--verbose');
+	if(@_) {
+		open($ap, '-|', $MH{'approc'}, '-format', '%(addr{text})', @_);
+		while(<$ap>) {
+			chomp;
+			push(@who, '--local-user', $_);
+		}
+		close($ap);
+	} elsif(ref($ARG{'defaultkey'}) eq 'ARRAY') {
+		if(grep(!m/^[\dA-F]+$/, @{$ARG{'defaultkey'}})) {
+			foreach my $key (@{$ARG{'defaultkey'}}) {
+				push(@who, '--local-user', $key);
+			}
+		}
+	} else {
+		push(@who, '--batch');
+	}
+
+	if(@who) {
+		open2($info, $null,
+			'gpg', '--sign', @who, '--logger-fd', '1', '--verbose');
 		close($null);
 		while(<$info>) {
 			if(m/^gpg: .* signature from: "([\dA-F]+)/i) {
-				$ARG{'defaultkey'}=$1;
-				last;
+				push(@keys, $1);
+			} elsif(m/^gpg: skipped/i) {
+				print;
 			}
 		}
 		close($info);
 	}
 
-	return($ARG{'defaultkey'});
+	if(@keys) {
+		return(@keys);
+	} elsif(ref($ARG{'defaultkey'}) eq 'ARRAY') {
+		return(@{$ARG{'defaultkey'}});
+	} else {
+		return();
+	}
 }
 
 sub gpg_sign {
@@ -1577,8 +1622,8 @@ sub gpg_sign {
 	$signature=~s/\s+$//s;
 
 	close($gpgout);
-	waitpid($pid, 1);
-	if($?!=0) {
+	waitpid($pid, WNOHANG);
+	if($? != 0) {
 		print "Signing failed.\n";
 		unlink($MH{'temp'});
 		return(undef);
@@ -1676,8 +1721,8 @@ sub gpg_encrypt {
 		print $encrypted $_;
 	}
 	close($gpgout);
-	waitpid($pid, 1);
-	if($?!=0) {
+	waitpid($pid, WNOHANG);
+	if($? != 0) {
 		print "Encryption failed.\n";
 		unlink($MH{'temp'});
 		return(undef);
