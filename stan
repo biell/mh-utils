@@ -13,6 +13,7 @@ use Pod::Usage;
 use IO::Handle;
 use List::Util qw(max);
 use Term::ReadKey;
+use Text::ParseWords;
 use POSIX;
 
 =head1 SYNOPSIS
@@ -25,6 +26,11 @@ All command-line options to B<stan> which are not listed below are
 passed unaltered and directly to L<scan(1)>.
 
 =over 8
+
+=item -b or -body
+
+Show the body of the message in the output.  If you need to turn
+this off, you can use -nobody.
 
 =item -v or -version
 
@@ -47,6 +53,7 @@ Print the software license, then exit.
 =cut
 
 my(@OPTIONS)=qw(
+	body|b!
 	version|v
 	scan-help
 	help|h
@@ -54,6 +61,8 @@ my(@OPTIONS)=qw(
 	license|L
 );
 my(%ARG)=();
+
+unshift(@ARGV, shellwords(`mhparam stan`));
 
 Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
 unless(GetOptions(\%ARG, @OPTIONS)) {
@@ -84,12 +93,17 @@ that the output is not configurable.
 =cut
 
 my($RS)=chr(036);
+my($US)=chr(037);
 
 my($FORMAT)=join($RS,
 	'%4(msg)',
 	'%<(cur)+%|%<(unseen)-%>%>',
-	'%<{List-Id}l%>'.
-		'%<{In-Reply-To}r%>'.
+	'%<{replied}-%>'.
+		'%<{forwarded}f%>'.
+		'%<{resent}d%>'.
+		'%<{encrypted}E%>'.
+		'%<{list-id}l%>'.
+		'%<{in-reply-to}r%>'.
 		'%<{content-type}%<(match multipart/signed)s%>%>'.
 		'%<{content-type}%<(match multipart/encrypted)e%>%>'.
 		'%<{content-type}%<(match multipart/mixed)a%>%>'.
@@ -101,16 +115,22 @@ my($FORMAT)=join($RS,
 	'%{Message-ID}',
 	'%{In-Reply-To}',
 	'%{References}',
+	'%(zputlit{body})',
+	$US
 );
+
+$/="$RS$US\n";
 
 my($SCAN)=IO::Handle->new;
 my(%mail)=();
-my($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs);
+my($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs, $body);
 my($ancestor);
 
-my($fmt)="%4d%1s%1s %5s %s  %s";
+my($fmt)="%4d%1s%-2s%5s %s  %s";
 
 my($cols, $rows, $width, $height)=GetTerminalSize(*STDOUT);
+
+$fmt.=' << %s' if($ARG{'body'});
 
 =pod
 
@@ -154,35 +174,123 @@ sub print_msg {
 
 =pod
 
-The info field will have an C<l> if the message is sent to a list,
-C<r> if the message is in reply to another message, C<s> if the message
-was digitally signed, and C<e> if the message was encrypted.  Any message
-which is sent to a list or replied to which is either signed or encrypted
-will list the letter capitalized (e.g. C<L> or C<R>).  An info field
-of C<.> means that the message might have an attachement.
+The info field will be populated based on information the characteristics
+of the message. The message
+
+=over 8
+
+=item -
+
+has been replied to,
+
+=item |
+
+has been forwarded or re-distributed,
+
+=item +
+
+has been replied to and either forwarded or re-distributed,
+
+=item E
+
+was sent encrypted,
+
+=item L
+
+is either signed or encrypted and arrived from a mailing list,
+
+=item l
+
+is part of some kind of mailing list,
+
+=item R
+
+is either signed or encrypted and is a reply to another message,
+
+=item r
+
+is a reply to another message,
+
+=item s
+
+is signed,
+
+=item e
+
+is encrypted, or
+
+=item .
+
+may have an attachment (or may not, this method has mixed results).
+
+=back
 
 =cut
 
-my(%INFO)=(
-	'l'		=> 'l',
-	'lr'		=> 'l',
-	'ls'		=> 'L',
-	'le'		=> 'L',
-	'lrs'	=> 'L',
-	'lre'	=> 'L',
-	'r'		=> 'r',
-	'rs'		=> 'R',
-	're'		=> 'R',
-	's'		=> 's',
-	'e'		=> 'e',
-	'a'		=> '.',
-);
+sub info {
+	local($_)=@_;
+	my($in, $out)=(' ', ' ');
+
+	/a/		and $in='.';
+	/e/		and $in='e';
+	/s/		and $in='s';
+	/r/		and $in='r';
+	/r[se]/	and $in='R';
+	/lr/		and $in='l';
+	/lr?[se]/	and $in='L';
+
+	/E/		and $out='E';
+	/-/		and $out='-';
+	/f/		and $out='|';
+	/d/		and $out='|';
+	/-[fd]/	and $out='+';
+
+	return($in.$out);
+}
+
+=pod
+
+By default, the threaded output of B<stan> does not contain any of the
+body text of a message (unlike L<scan(1)>).  However, if you would still
+like to see the body, you can supply the special C<-body> option to
+B<stan> or place C<stan: -body> into your F<.mh_profile>.  If you do
+this, you will notice that the output is far more readable than the
+same output from L<scan(1)>.  This is because most MIME content is removed
+allowing more of the text of the message to show through.
+
+=cut
+
+sub body {
+	local($_)=@_;
+
+	s/^--\S.*$//mig;
+	s/=\n//sg;
+	s/\s*=([0-9a-f]{2})/chr(hex($1))/ige;
+	s/\nContent-Type:(\s.*?\n)*//sig;
+	s/^Content-[\w-]+:.*$//mig;
+	s/^X-[\w-]+:.*$//mig;
+	s/^\s*This is a multi-part message.*$//mig;
+	s/^\s*This is a MIME-encapsulated message.*$//mig;
+	s/^MIME-Version: .*$//mig;
+	s/^Date: .*$//mig;
+	s|//.*||mg;
+	s|/\*.*\*/||sg;
+	s/[\w*@>-]+\s*{\s*[\w-]+:.*?}//sg;
+	s/&nbsp;/ /gi;
+	s/&lt;/</gi;
+	s/&gt;/>/gi;
+	s/\s*<.*?>//g;
+	s/\s+/ /sg;
+	s/^\s+//s;
+
+	return($_);
+}
 
 open($SCAN, '-|', 'scan', @ARGV, '-width', '2048', '-format', $FORMAT);
 while(<$SCAN>) {
 	chomp;
 
-	($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs)
+	($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs, $body)
 		=split(m/$RS/o);
 
 	$id=~s/^.*?<//;
@@ -196,7 +304,15 @@ while(<$SCAN>) {
 
 	$mail{$id}{'time'}=$time;
 	$time=strftime("%m/%d", localtime($time));
-	$mail{$id}{'scan'}=[$msg, $status, $INFO{$info}, $time, $from, $subject];
+	$mail{$id}{'scan'}=[
+		$msg,
+		$status,
+		&info($info),
+		$time,
+		$from,
+		$subject,
+		$ARG{'body'}?&body($body):''
+	];
 }
 close($SCAN);
 
