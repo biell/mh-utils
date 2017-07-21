@@ -67,10 +67,19 @@ Don't use a draft folder
 
 Use I<editor> as the editor of messages.
 
-=item -markup type
+=item -include
 
-Use I<type> as the markup type instead of the default of C<markdown>.
-Note that use of this value also overrides F<.mh_profile> settings.
+Automatically include the contents of a message in replies.
+
+=item -markup [type]
+
+Tell B<heynow> to automatically convert the message into a
+C<multipart/alternative> with the text written being the C<text/plain>
+portion, and HTML used for an alternative C<text/html> section.  The
+program L<pandoc(1)> will be used to perform the conversion.  If
+I<type> is not specified and the C<markdown> command below does not
+have a value predefined in your C<.mh_profile>, then the default of markdown
+will be used.
 
 =item -noedit
 
@@ -102,7 +111,9 @@ my(@OPTIONS)=qw(
 	draftmessage=s
 	nodraftfolder
 	editor=s
-	markup=s
+	include!
+	markup:s
+	nomarkup
 	noedit
 	prompt=s
 	contentid=s
@@ -121,6 +132,7 @@ my(%ATTACHED)=();
 my($MARKUP, $SIGN, $ENCRYPT, $MIME_PENDING)=(0, 0, 0, 0);
 my($GPG_OK, $PANDOC_OK)=(undef, undef);
 
+unshift(@ARGV, shellwords($MH{'heynow'}));
 Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
 unless(GetOptions(\%ARG, @OPTIONS)) {
 	pod2usage(-verbose => 1, -exitval => 1);
@@ -155,6 +167,12 @@ $MH{'annoproc'}='anno' unless($MH{'annoproc'});
 $MH{'approc'}="$MH{'libdir'}/ap" unless($MH{'approc'});
 $MH{'path'}=join('/', $ENV{'HOME'}, $MH{'path'});
 
+if($ARG{'nomarkup'}) {
+	delete($ARG{'markup'});
+} elsif(exists($ARG{'markup'}) && !$ARG{'markup'}) {
+	$ARG{'markup'}='markdown';
+}
+
 =head1 DESCRIPTION
 
 This program is a drop-in replacement for the standard nmh
@@ -182,24 +200,21 @@ B<heynow> works.
 
 =over 8
 
-=item heynow-automarkup
+=item heynow
 
 One of the key benefits of B<heynow> is the ability to use
 L<pandoc(1)> to markup text input into HTML to be included
 as a multipart/alternative which works better on phones and
 other devices which benefit from the automatic reflow capabilities
-offered by HTML email.  When C<heynow-automarkup: 1> is entered
+offered by HTML email.  When C<heynow: -markup> is entered
 into your F<.mh_profile>, this formatting will be enabled
 for all outgoing email without the need to request it.
 
-=item heynow-autoinclude
-
 When using L<repl(1)> to reply to mail, include the original message
-in the message template.  This is useful not just because it saves
-having to type C<-format> when invoking L<repl(1)>, but also because
+in the message template.  This is useful because
 it is a more modern replacement for repl's methodology.  See
 L<Commands/include> below for more information. Set
-C<heynow-autoinclude: 1> in your F<.mh_profile> to enable this
+C<heynow: -include> in your F<.mh_profile> to enable this
 feature.
 
 =item heynow-command
@@ -301,8 +316,8 @@ message.  L<pandoc(1)> must be installed.
 The default markup is the L<pandoc(1)> extended markdown, but this can be
 changed via the command-line or in your F<.mh_profile> file using the
 setting C<heynow-markup>.  You can schedule B<heynow> to automatically
-run C<markup> for you on every email you send by setting C<heynow-automarkup>
-to 1 in your F<.mh_profile>.
+run C<markup> for you on every email you send by setting C<heynow: -markup>
+in your F<.mh_profile>.
 
 =head3 display [<switches>]
 
@@ -542,7 +557,7 @@ to send your entire keyring.
 
 		&backup_draft;
 
-		$WHATNOW{'markup'}->() if($MH{'heynow-automarkup'});
+		$WHATNOW{'markup'}->() if($ARG{'markup'});
 
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
@@ -1034,7 +1049,7 @@ to send your entire keyring.
 
 		@{$ARG{'defaultkey'}}=&gpg_keys(@{$arg{'key'}});
 
-		if($MH{'heynow-automarkup'} && !$MARKUP) {
+		if($ARG{'markup'} && !$MARKUP) {
 			$WHATNOW{'markup'}->();
 		}
 
@@ -1072,7 +1087,10 @@ to send your entire keyring.
 		my($gpgin, $gpgout)=(IO::Handle->new, IO::Handle->new);
 		local($_);
 
-		$MH{'heynow-automarkup'}=0;
+		if($ARG{'markup'}) {
+			print "Disabling markup for signed message\n";
+			delete($ARG{'markup'});
+		}
 
 		unless(&gpg_ok) {
 			print "gpg not working on the system, signing disabled\n";
@@ -1115,7 +1133,7 @@ to send your entire keyring.
 		return unless(&mime_ok);
 		return unless(&gpg_ok);
 
-		if($MH{'heynow-automarkup'} && !$MARKUP) {
+		if($ARG{'markup'} && !$MARKUP) {
 			$WHATNOW{'markup'}->();
 		}
 
@@ -1766,11 +1784,11 @@ $PROMPT->Attribs->{'attempted_completion_function'}=sub {
 	grep(m/^$text/, keys(%WHATNOW));
 };
 
-$WHATNOW{'include'}->() if($MH{'heynow-autoinclude'});
+$WHATNOW{'include'}->() if($ARG{'include'});
 
 $WHATNOW{'edit'}->() unless($ARG{'noedit'});
 
-&mime_ok if($MH{'heynow-automarkup'});
+&mime_ok if($ARG{'markup'});
 
 while(1) {
 	my($input)=$PROMPT->readline($ARG{'prompt'});

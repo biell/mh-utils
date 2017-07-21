@@ -32,6 +32,17 @@ passed unaltered and directly to L<scan(1)>.
 Show the body of the message in the output.  If you need to turn
 this off, you can use -nobody.
 
+=item -d fmt or -date fmt
+
+Specify the format for the date using L<strftime(3)> C<%> sequences.
+The default is C<%m/%d> for month/day in 0 padded numeric form.
+
+=item -t fmt or -time fmt
+
+Specify the format for the time (used when messages are less than 24 hours
+old) using L<strftime(3)> C<%> sequences.  The default is C<%H:%M> for
+hour:minute in 0 padded numeric, 24-hour form.
+
 =item -v or -version
 
 Print version and exit
@@ -54,13 +65,18 @@ Print the software license, then exit.
 
 my(@OPTIONS)=qw(
 	body|b!
+	time|t=s
+	date|d=s
 	version|v
 	scan-help
 	help|h
 	manual|H
 	license|L
 );
-my(%ARG)=();
+my(%ARG)=(
+	'time'	=> '%R',
+	'date'	=> '%m/%d',
+);
 
 unshift(@ARGV, shellwords(`mhparam stan`));
 
@@ -92,8 +108,7 @@ that the output is not configurable.
 
 =cut
 
-my($RS)=chr(036);
-my($US)=chr(037);
+my($RS, $US)=(chr(036), chr(037));
 
 my($FORMAT)=join($RS,
 	'%4(msg)',
@@ -126,11 +141,10 @@ my(%mail)=();
 my($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs, $body);
 my($ancestor);
 
-my($fmt)="%4d%1s%-2s%5s %s  %s";
+my($FMT);
+my($TIMEW)=3;
 
 my($cols, $rows, $width, $height)=GetTerminalSize(*STDOUT);
-
-$fmt.=' << %s' if($ARG{'body'});
 
 =pod
 
@@ -161,7 +175,7 @@ sub print_msg {
 
 	if($mail{$msg}{'scan'}) {
 		$mail{$msg}{'scan'}[5]=~s/^\s*/$space/;
-		print substr(sprintf($fmt, @{$mail{$msg}{'scan'}}), 0, $cols), "\n";
+		print substr(sprintf($FMT, @{$mail{$msg}{'scan'}}), 0, $cols), "\n";
 		$indent++;
 	}
 	
@@ -303,7 +317,13 @@ while(<$SCAN>) {
 	$mail{$id}{'parent'}=undef;
 
 	$mail{$id}{'time'}=$time;
-	$time=strftime("%m/%d", localtime($time));
+	if($^T-$time < 86400) {
+		$time=strftime($ARG{'time'}, localtime($time));
+		$time=~s/\s*([ap])\.?m\.?\s*/\L$1/i;
+		$TIMEW=length($time) if(length($time)>$TIMEW);
+	} else {
+		$time=strftime($ARG{'date'}, localtime($time));
+	}
 	$mail{$id}{'scan'}=[
 		$msg,
 		$status,
@@ -351,6 +371,9 @@ displayed in the order in which they were received.
 foreach my $mid (keys(%mail)) {
 	$mail{$mid}{'time'}+=$mail{$msg}{'scan'}[0]/10000 if($mail{$msg}{'scan'});
 }
+
+$FMT="%4d%1s%-2s%-${TIMEW}s %s  %s";
+$FMT.=' << %s' if($ARG{'body'});
 
 foreach my $mid (sort bytime keys(%mail)) {
 	&print_msg($mid, 0) unless($mail{$mid}{'parent'});
