@@ -10,6 +10,7 @@ my($VERSION)='0.9';
 
 use IO::Handle;
 use Getopt::Long;
+use Term::ReadKey;
 use Pod::Usage;
 
 my($SIZE)=0;
@@ -45,6 +46,8 @@ Print the software license, then exit.
 =back
 
 =cut
+
+my($COLS, $ROWS, $WIDTH, $HEIGHT)=GetTerminalSize(*STDOUT);
 
 my(@OPTIONS)=qw(
 	input-encoding|iencoding|input_encoding|I=s
@@ -94,7 +97,7 @@ sub markdown {
 	my($md)=IO::Handle->new;
 	local($/)=undef;
 
-	open($md, '-|', @pandoc, @_);
+	open($md, '-|', @pandoc, "--columns=$COLS", @_);
 	$_=<$md>;
 	close($md);
 

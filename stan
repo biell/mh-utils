@@ -14,6 +14,7 @@ use IO::Handle;
 use List::Util qw(max);
 use Term::ReadKey;
 use Text::ParseWords;
+use MIME::Base64;
 use POSIX;
 
 =head1 SYNOPSIS
@@ -137,14 +138,13 @@ my($FORMAT)=join($RS,
 $/="$RS$US\n";
 
 my($SCAN)=IO::Handle->new;
-my(%mail)=();
+my(%MAIL)=();
 my($msg, $status, $info, $time, $from, $subject, $id, $reply, $refs, $body);
-my($ancestor);
 
 my($FMT);
 my($TIMEW)=3;
 
-my($cols, $rows, $width, $height)=GetTerminalSize(*STDOUT);
+my($COLS, $ROWS, $WIDTH, $HEIGHT)=GetTerminalSize(*STDOUT);
 
 =pod
 
@@ -155,7 +155,7 @@ recently received message in that thread.
 =cut
 
 sub bytime {
-	$mail{$a}{'time'} <=> $mail{$b}{'time'}
+	$MAIL{$a}{'time'} <=> $MAIL{$b}{'time'}
 }
 
 =pod
@@ -171,19 +171,19 @@ sub print_msg {
 	my($msg, $indent)=@_;
 	my($space)=' 'x($indent*2);
 
-	return unless($mail{$msg});
+	return unless($MAIL{$msg});
 
-	if($mail{$msg}{'scan'}) {
-		$mail{$msg}{'scan'}[5]=~s/^\s*/$space/;
-		print substr(sprintf($FMT, @{$mail{$msg}{'scan'}}), 0, $cols), "\n";
+	if($MAIL{$msg}{'scan'}) {
+		$MAIL{$msg}{'scan'}[5]=~s/^\s*/$space/;
+		print substr(sprintf($FMT, @{$MAIL{$msg}{'scan'}}), 0, $COLS), "\n";
 		$indent++;
 	}
 	
-	foreach my $child (sort bytime @{$mail{$msg}{'replies'}}) {
+	foreach my $child (sort bytime @{$MAIL{$msg}{'replies'}}) {
 		&print_msg($child, $indent);
 	}
 
-	delete($mail{$msg});
+	delete($MAIL{$msg});
 }
 
 =pod
@@ -277,25 +277,31 @@ allowing more of the text of the message to show through.
 sub body {
 	local($_)=@_;
 
+	s|(([a-zA-Z0-9+/]{68}\s)+)|decode_base64($1)|sge;
+
 	s/^--\S.*$//mig;
 	s/=\n//sg;
 	s/\s*=([0-9a-f]{2})/chr(hex($1))/ige;
-	s/\nContent-Type:(\s.*?\n)*//sig;
+	s/\nContent-Type:([ \t].*?\n)*//sig;
 	s/^Content-[\w-]+:.*$//mig;
 	s/^X-[\w-]+:.*$//mig;
 	s/^\s*This is a multi-part message.*$//mig;
 	s/^\s*This is a MIME-encapsulated message.*$//mig;
 	s/^MIME-Version: .*$//mig;
 	s/^Date: .*$//mig;
-	s|//.*||mg;
+	s/\n-- \n.*$//s;
+	s|^\s*//.*||mg;
 	s|/\*.*\*/||sg;
+	s|<style[^>]*>.*?</style>||sig;
 	s/[\w*@>-]+\s*{\s*[\w-]+:.*?}//sg;
+	s/<.*?>/ /g;
 	s/&nbsp;/ /gi;
 	s/&lt;/</gi;
 	s/&gt;/>/gi;
-	s/\s*<.*?>//g;
 	s/\s+/ /sg;
 	s/^\s+//s;
+
+	s/[[:^print:]]//g;
 
 	return($_);
 }
@@ -312,11 +318,11 @@ while(<$SCAN>) {
 	$reply=~s/^.*<//;
 	$reply=~s/>.*?$//;
 
-	$mail{$id}{'reply-to'}=$reply;
-	$mail{$id}{'refs'}=[reverse($refs=~m/<(.*?)>/g)];
-	$mail{$id}{'parent'}=undef;
+	$MAIL{$id}{'reply-to'}=$reply;
+	$MAIL{$id}{'refs'}=[reverse($refs=~m/<(.*?)>/g)];
+	$MAIL{$id}{'parent'}=undef;
 
-	$mail{$id}{'time'}=$time;
+	$MAIL{$id}{'time'}=$time;
 	if($^T-$time < 86400) {
 		$time=strftime($ARG{'time'}, localtime($time));
 		$time=~s/\s*([ap])\.?m\.?\s*/\L$1/i;
@@ -324,7 +330,7 @@ while(<$SCAN>) {
 	} else {
 		$time=strftime($ARG{'date'}, localtime($time));
 	}
-	$mail{$id}{'scan'}=[
+	$MAIL{$id}{'scan'}=[
 		$msg,
 		$status,
 		&info($info),
@@ -345,16 +351,16 @@ using L<scan(1)>.
 
 =cut
 
-foreach my $mid (keys(%mail)) {
-	foreach my $ancestor ($mail{$mid}{'reply-to'}, @{$mail{$mid}{'refs'}}) {
-		if($ancestor && $mail{$ancestor}) {
-			$mail{$mid}{'parent'}=$ancestor;
-			push(@{$mail{$ancestor}{'replies'}}, $mid);
+foreach my $mid (keys(%MAIL)) {
+	foreach my $ancestor ($MAIL{$mid}{'reply-to'}, @{$MAIL{$mid}{'refs'}}) {
+		if($ancestor && $MAIL{$ancestor}) {
+			$MAIL{$mid}{'parent'}=$ancestor;
+			push(@{$MAIL{$ancestor}{'replies'}}, $mid);
 
 			while($ancestor) {
-				$mail{$ancestor}{'time'}=
-					max($mail{$ancestor}{'time'}, $mail{$mid}{'time'});
-				$ancestor=$mail{$ancestor}{'parent'};
+				$MAIL{$ancestor}{'time'}=
+					max($MAIL{$ancestor}{'time'}, $MAIL{$mid}{'time'});
+				$ancestor=$MAIL{$ancestor}{'parent'};
 			}
 			last;
 		}
@@ -368,15 +374,15 @@ displayed in the order in which they were received.
 
 =cut
 
-foreach my $mid (keys(%mail)) {
-	$mail{$mid}{'time'}+=$mail{$msg}{'scan'}[0]/10000 if($mail{$msg}{'scan'});
+foreach my $mid (keys(%MAIL)) {
+	$MAIL{$mid}{'time'}+=$MAIL{$msg}{'scan'}[0]/10000 if($MAIL{$msg}{'scan'});
 }
 
 $FMT="%4d%1s%-2s%-${TIMEW}s %s  %s";
 $FMT.=' << %s' if($ARG{'body'});
 
-foreach my $mid (sort bytime keys(%mail)) {
-	&print_msg($mid, 0) unless($mail{$mid}{'parent'});
+foreach my $mid (sort bytime keys(%MAIL)) {
+	&print_msg($mid, 0) unless($MAIL{$mid}{'parent'});
 }
 
 =head1 AUTHOR
