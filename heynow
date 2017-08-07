@@ -162,10 +162,10 @@ $MH{'editor'}=$ARG{'editor'} if($ARG{'editor'});
 $MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'};
 $MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
 $MH{'backup'}=$MH{'draft'}; $MH{'backup'}=~s|/([^/]+)$|/,$1.bak|;
-$MH{'aliproc'}='ali' unless($MH{'aliproc'});
-$MH{'annoproc'}='anno' unless($MH{'annoproc'});
-$MH{'approc'}="$MH{'libdir'}/ap" unless($MH{'approc'});
 $MH{'path'}=join('/', $ENV{'HOME'}, $MH{'path'});
+$MH{'aliproc'}||='ali';
+$MH{'annoproc'}||='anno';
+$MH{'approc'}||="$MH{'libdir'}/ap";
 
 if($ARG{'nomarkup'}) {
 	delete($ARG{'markup'});

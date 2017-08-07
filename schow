@@ -1,0 +1,709 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+schow - Curses multi-area MH show
+
+=cut
+
+my($VERSION)='0.8';
+
+use Getopt::Long;
+use Pod::Usage;
+use IO::Handle;
+use List::Util qw(min max);
+use Text::ParseWords;
+use Text::Tabs;
+use File::Basename;
+use File::Temp;
+use Curses;
+use Curses::UI;
+
+=head1 SYNOPSIS
+
+schow [<show options>]
+
+=head2 Options
+
+All command-line options to B<schow> which are not listed below are
+passed unaltered and directly to L<show(1)>.
+
+=over 8
+
+=item -f [name] or -field [name]
+
+Add C<name> to the list of fields to display in the buffer.
+
+=item -s or -source
+
+Include a final message part consisting of the entire messsage source.
+
+=item -i or -inversebar
+
+Use the terminal's reverse video capability to invert the menu bar
+so that it stands out more as a barrier between the header and
+body of a message.
+
+=item -b or -boldbar
+
+Use the terminal's bold capability to make the menu bar stand out
+more than normal.  Depending on your terminal settings, this may
+or may not look different.
+
+=item -e <program> or -editor <program>
+
+Set the text editor used when requesting to edit attachments
+of MIME type C<text/plain> to be C<program>.
+
+=item -v or -version
+
+Print version and exit
+
+=item -h or -? or -help
+
+print this short help, then exit.
+
+=item -H or -manual
+
+Print the full manual, then exit.
+
+=item -L or -license
+
+Print the software license, then exit.
+
+=back
+
+=cut
+
+my(@OPTIONS)=qw(
+	field|f=s@
+	inversebar|i
+	boldbar|b
+	source|s
+	editor|e=s
+	version|v
+	help|h
+	manual|H
+	license|L
+);
+my(%ARG)=(
+	'field'		=> ['date', 'from'],
+	'inversebar'	=> 0,
+	'boldbar'		=> 0,
+);
+
+my(@MH_SETTINGS)=qw(
+	editor pathproc showmimeproc lproc listmimeproc storemimeproc
+	scanproc pickproc schow
+);
+my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
+	`mhparam -all; mhparam @MH_SETTINGS`);
+
+$MH{'pathproc'}||='mhpath';
+$MH{'path'}=`$MH{'pathproc'} +`; chomp($MH{'path'});
+$MH{'schow'}||='';
+$MH{'listmimeproc'}||='mhlist';
+$MH{'storemimeproc'}||='mhstore';
+$MH{'scanproc'}||='scan';
+$MH{'pickproc'}||='pick';
+$MH{'editor'}||=$ENV{'EDITOR'} || $ENV{'VISUAL'} || 'vi';
+
+unshift(@ARGV, shellwords($MH{'schow'}));
+
+$Text::Tabs::tabstop=4;
+
+Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
+unless(GetOptions(\%ARG, @OPTIONS)) {
+     pod2usage(-verbose => 1, -exitval => 1);
+} 
+
+if($ARG{'version'}) {
+	print basename($0), ' ', $VERSION, "\n";
+	exit(0);
+} elsif($ARG{'help'}) {
+	pod2usage(-verbose => 1, -exitval => 0);
+} elsif($ARG{'manual'}) {
+	pod2usage(-verbose => 2, -exitval => 0);
+} elsif($ARG{'license'}) {
+	pod2usage(-verbose => 99, -exitval => 0,
+		-sections => ['LICENSE', 'COPYRIGHT']);
+}
+
+push(@{$ARG{'field'}}, 'subject');
+
+=head1 DESCRIPTION
+
+B<schow> divides the screen into multiple parts and displays a message
+without the use of C<lproc>, it provides it's own pagination.  Instead
+of an empty line between the header and the body, B<schow> has a menu
+bar which contains information about the message and provides options
+for accessing and saving attachments.  The header information and
+menu stay at the top of the screen as you page through the message,
+ensuring access to the context of the message throughout review.
+
+=cut
+
+my($CUI)=Curses::UI->new(-mouse_support => 1, -color_support => 1);
+my($WIN)=$CUI->add('schow', 'Window');
+my($HEAD)=$WIN->add('head', 'TextViewer',
+	-height => scalar(@{$ARG{'field'}}),
+	-focusable => 0,
+);
+my($MENU)=$WIN->add('menu', 'Container',
+	-y => scalar(@{$ARG{'field'}}),
+	-height => 1,
+);
+my($BODY)=$WIN->add('body', 'TextViewer',
+	-y => scalar(@{$ARG{'field'}})+1,
+	-showoverflow => 0,
+);
+
+my($WIDTH)=$Curses::COLS;
+my($BAR, $MENU_PART, $MENU_VIEW);
+
+my($MSG)=undef;
+my(@PARTS)=();
+my(%CACHE);
+
+=pod
+
+B<schow> is an C<mhshow> alternative/replacement.  In all practical ways, it
+acts the same as C<mhshow>.  Just as C<show> and C<mhshow> do, it changes
+the curr
+
+=cut
+
+sub mark {
+	my($msg)=@_;
+	my(@mark)=($MH{'pickproc'}, '-sequence', 'cur', '-list');
+	my($current)=IO::Handle->new;
+
+	open($current, '-|', @mark, $msg);
+	while(<$current>) {
+		$MSG=$1 if(m/(\d+)/);
+	}
+	close($current);
+
+	return($MSG);
+}
+
+sub headers {
+	my(@scan)=($MH{'scanproc'}, 'cur', '-width', '1024');
+	my($header)=IO::Handle->new;
+	my($rs)=chr(036);
+	my($fmt)=join($rs,
+		map(sprintf('%s: %%(decode{%s})', ucfirst($_), $_), @{$ARG{'field'}})
+	);
+	local($/)=undef;
+
+	unless($CACHE{'headers'}) {
+		$CACHE{'headers'}=[];
+
+		open($header, '-|', @scan, '-format', $fmt);
+		foreach my $field (split(m/$rs/, <$header>)) {
+			$field=~s/\s+$//s;
+			push(@{$CACHE{'headers'}}, $field);
+		}
+		close($header);
+	}
+
+	$HEAD->text(join("\n", @{$CACHE{'headers'}}));
+	$HEAD->draw(1);
+}
+
+sub parts {
+	my(@mhlist)=($MH{'listmimeproc'},
+		'-disposition', '-verbose', '-noheaders');
+	my($list)=IO::Handle->new;
+	my($partw)=0;
+	local($_);
+
+	open($list, '-|', @mhlist);
+	while(<$list>) {
+		if(m{([\d\.]+)\s+([\w-]+/[\w-]+)\s+(\d+\w*)\s*(.*)}) {
+			$partw=max($partw, length($1)) if(@PARTS);
+
+			push(@PARTS, {
+				'part'		=> $1,
+				'type'		=> $2,
+				'size'		=> $3,
+				'description'	=> $4 || undef,
+			});
+		} elsif(m{^\s+([\w-]+)="?(.+?)"?\s*$}i) {
+			$PARTS[-1]->{$1}=$2;
+		} elsif(m{^\s+disposition\s+"?(.+?)"?\s*$}i) {
+			$PARTS[-1]->{'disposition'}=$1;
+		}
+	}
+	close($list);
+
+	foreach $part (@PARTS) {
+		next unless(ref($part) eq 'HASH' && %$part);
+
+		if($part->{'dispositon'} || $part->{'name'} || $part->{'filename'}) {
+			$part->{'attachment'}='yes';
+		} elsif($part->{'type'}!~m/^text/i) {
+			$part->{'attachment'}='yes';
+		}
+
+		if(exists($part->{'name'}) && exists($part->{'filename'})) {
+			if($part->{'name'} eq $part->{'filename'}) {
+				delete($part->{'name'});
+			}
+		} elsif(exists($part->{'name'})) {
+			$part->{'filename'}=$part->{'name'};
+			delete($part->{'name'});
+		}
+
+		if($part->{'filename'}) {
+			$part->{'filename'}=basename($part->{'filename'});
+			$part->{'filename'}=~s/[\s;&?*\\~]+/_/g;
+			$part->{'filename'}=~s/[[:^print:]]+/_/g;
+		}
+
+		if(@PARTS>1) {
+			$part->{'display'}=sprintf("%-${partw}s %s", $part->{'part'},
+							$part->{'name'} ||
+							$part->{'filename'} ||
+							$part->{'description'} ||
+							$part->{'type'}
+						);
+		} else {
+			$part->{'display'}=$part->{'type'};
+		}
+
+		if(length($part->{'display'})>=30) {
+			substr($part->{'display'}, 22, -6, '*');
+		}
+	}
+}
+
+sub source {
+	my(@mhpath)=($MH{'pathproc'});
+	my($path, $raw)=(IO::Handle->new, IO::Handle->new);
+	my($part)=int($PARTS[-1]{'part'}+1);
+	my($msgfile);
+	local($_);
+
+	open($path, '-|', @mhpath, $MSG);
+	while(<$path>) {
+		chomp;
+		$msgfile=$_;
+	}
+	close($path);
+
+	return unless($msgfile && -s $msgfile);
+
+	push(@PARTS, {
+			'msg'		=> $MSG,
+			'part'		=> $part,
+			'type'		=> 'text/plain',
+			'description'	=> 'View Message Source',
+			'display'		=> 'View Source',
+			'filename'	=> $msgfile,
+			'size'		=> -s $msgfile,
+		});
+
+	open($raw, '<', $msgfile);
+	while(<$raw>) {
+		chomp;
+
+		push(@{$CACHE{$PARTS[-1]}{'show'}}, expand($_));
+	}
+	$CACHE{$PARTS[-1]}{'source'}=1;
+	close($raw);
+}
+
+
+sub info {
+	my($part)=@_;
+
+	unless($CACHE{$PARTS[$part]}{'info'}) {
+		$CACHE{$PARTS[$part]}{'info'}=join("\n", '', map(
+			sprintf('    %-15s %s', "$_:", $PARTS[$part]{$_}),
+			sort(keys(%{$PARTS[$part]}))
+		), '');
+	}
+
+	$BODY->text($CACHE{$PARTS[$part]}{'info'});
+	#$BODY->focus();
+}
+
+sub save {
+	my($part)=@_;
+	my(@mhstore)=($MH{'storemimeproc'});
+	my($file)=$CUI->savefilebrowser(
+		-path		=> $ENV{'PWD'},
+		-file		=> $PARTS[$part]{'filename'},
+		-editfilename	=> 1,
+	);
+
+	if($PARTS[$part]{'part'} && $file) {
+		system(@mhstore, '-outfile', $file, '-part', $PARTS[$part]{'part'});
+	}
+	$BODY->focus();
+}
+
+sub open {
+	my($part)=@_;
+	my(@show)=($MH{'showmimeproc'}, '-form', 'mhl.body');
+
+	if($PARTS[$part]{'part'}) {
+		$CUI->leave_curses();
+		system(@show, '-part', $PARTS[$part]{'part'});
+		$CUI->reset_curses();
+	}
+	$BODY->focus();
+}
+
+sub editor {
+	my($part)=@_;
+	my(@mhstore)=($MH{'storemimeproc'});
+	my(@editor)=($ARG{'editor'} || $MH{'editor'});
+	my($fh, $temp)=File::Temp::tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+
+	if($PARTS[$part]{'msg'} && $temp) {
+		system('cp', '-a', $PARTS[$part]{'filename'}, $temp);
+
+		$CUI->leave_curses();
+		system(@editor, $temp);
+		$CUI->reset_curses();
+	} elsif($PARTS[$part]{'part'} && $temp) {
+		system(@mhstore, '-outfile', $temp, '-part', $PARTS[$part]{'part'});
+
+		$CUI->leave_curses();
+		system(@editor, $temp);
+		$CUI->reset_curses();
+	}
+	unlink($temp);
+	$BODY->focus();
+}
+
+sub show {
+	my($part)=@_;
+	my(@show)=($MH{'showmimeproc'}, '-textonly', '-inlineonly',
+		'-form', 'mhl.body', '-markform', '/dev/null');
+	my($body)=IO::Handle->new;
+	my(@text)=();
+	my(@parts)=();
+	my($line)=0;
+
+	unless($CACHE{$PARTS[$part]}{'show'}) {
+		if($part) {
+			push(@parts, '-part', $PARTS[$part]{'part'});
+		} else {
+			foreach my $part (@PARTS) {
+				unless($part->{'attachment'}) {
+					push(@parts, '-part', $part->{'part'});
+				}
+			}
+		}
+
+		open($body, '-|', @show, @parts);
+		while(<$body>) {
+			chomp;
+			$line++;
+
+			if($line==1 && m|^part\s+\d+\s+\w+/.*\d+\w*$|) {
+				next;
+			}
+
+			if(m/^\s{8}/ && length>$WIDTH) {
+				s/^(\s+)(.*?)\s*$/$1$2$1/;
+				while(length>$WIDTH && s/^\s//) {
+					s/\s$//;
+				}
+			}
+			push(@text, @{$CUI->text_wrap(expand($_), $WIDTH)});
+		}
+		close($body);
+
+		foreach(@text) {
+			s/\s+$//;
+		}
+
+		$CACHE{$PARTS[$part]}{'show'}=\@text;
+	}
+
+	$BODY->text(join("\n", @{$CACHE{$PARTS[$part]}{'show'}}));
+	$BODY->draw(1);
+	#$BODY->focus();
+}
+
+sub zoom {
+	my($delta)=@_;
+	my($part)=$MENU_PART->get();
+
+	if($delta<0 && $WIDTH<=40) {
+		return(undef);
+	} elsif($delta>0 && $WIDTH>=320) {
+		return(undef);
+	}
+
+	foreach my $part (values(%CACHE)) {
+		delete($part->{'show'}) if(ref($part) eq 'HASH' && !$part->{'source'});
+	}
+	$WIDTH+=$delta;
+	$ENV{'COLUMNS'}=$WIDTH;
+
+	&show($part);
+}
+
+sub view {
+	local($_)=@_;
+	my(@views)=();
+	my($text)='pgp-signature|x-c?sh|x-script|xml';
+
+	if(m(text/plain)) {
+		@views=qw( show about editor save );
+	} elsif(m(text/)) {
+		@views=qw( show about open editor save );
+	} elsif(m(message/)) {
+		@views=qw( show about open save );
+	} elsif(m(application/($text))) {
+		@views=qw( show about open save );
+	} else {
+		@views=qw( about open save );
+	}
+
+	return([@views]);
+}
+
+sub action {
+	my($menu)=@_;
+	my($part)=$MENU_PART->get();
+	my($view)=$MENU_VIEW->get();
+
+	if($menu==$MENU_PART) {
+		$MENU_VIEW->{-values}=&view($PARTS[$part]{'type'});
+		$MENU_VIEW->{-selected}=0;
+		$MENU_VIEW->layout();
+	}
+
+	$view=$MENU_VIEW->get();
+
+	if($view=~m/save/) {
+		&save($part);
+		$MENU_VIEW->{-selected}=0;
+	} elsif($view=~m/open/) {
+		&open($part);
+		$MENU_VIEW->{-selected}=0;
+	} elsif($view=~m/editor/) {
+		&editor($part);
+		$MENU_VIEW->{-selected}=0;
+	}
+
+	$view=$MENU_VIEW->get();
+
+	if($view=~m/show/) {
+		&show($part);
+	} elsif($view=~m/about/) {
+		&info($part);
+	}
+
+	if($ARG{'boldbar'}) {
+		$MENU_PART->{-canvasscr}->attron(A_BOLD);
+		$MENU_VIEW->{-canvasscr}->attron(A_BOLD);
+	}
+	$MENU_PART->{-canvasscr}->attron(A_UNDERLINE);
+	$MENU_VIEW->{-canvasscr}->attron(A_UNDERLINE);
+
+	$MENU_PART->draw();
+	$MENU_VIEW->draw();
+}
+
+sub menu {
+	my($selected)=ref($MENU_PART)?($MENU_PART->get()):0;
+	my($indexes)=[];
+	my($labels)={};
+	my($views)=[];
+
+	for(my $i=0; $i<@PARTS; $i++) {
+		next if($PARTS[$i]{'type'}=~m/multipart/);
+
+		$labels->{$i}=$PARTS[$i]{'display'};
+		push(@$indexes, $i);
+	}
+
+	$views=&view($PARTS[$part]{'type'});
+
+	$BAR=$MENU->add('bar', 'Label',
+		-textalignment => 'right',
+		-width => $Curses::COLS,
+		-reverse => $ARG{'inversebar'},
+		-underline => !$ARG{'inversebar'},
+		-bold => $ARG{'boldbar'},
+		-paddingspaces => 1,
+		-text => $MSG.' ',
+	);
+
+	$MENU_PART=$MENU->add('part', 'Popupmenu',
+		-x => 2,
+		-values => $indexes,
+		-labels => $labels,
+		-selected => $selected,
+		-wraparound => 1,
+		-onchange => \&action,
+		-sbborder => 0,
+	);
+
+	$MENU_VIEW=$MENU->add('view', 'Popupmenu',
+		-x => $MENU_PART->width()+3,
+		-values => $views,
+		-selected => 0,
+		-wraparound => 1,
+		-onchange => \&action,
+		-sbborder => 0,
+	);
+
+	$MENU->set_draworder('bar', 'part', 'view');
+}
+
+sub bindings {
+	sub hsend {
+		foreach my $key (@_) {
+			$HEAD->process_bindings($key);
+		}
+		$BODY->focus();
+	}
+	sub bsend {
+		foreach my $key (@_) {
+			$BODY->process_bindings($key);
+		}
+		$BODY->focus();
+	}
+
+	#Slide Head:
+	$WIN->set_binding( sub { &hsend((KEY_RIGHT())x2) }, "\e261-1", KEY_NPAGE, KEY_PPAGE() );
+	$WIN->set_binding( sub { &hsend((KEY_LEFT())x2) }, "\e260-1", KEY_PPAGE() );
+	$WIN->set_binding( sub { &hsend(KEY_UP()) }, "\e259-1" );
+	$WIN->set_binding( sub { &hsend(KEY_DOWN()) }, "\e258-1" );
+
+	#Editor motions:
+	$BODY->set_binding( 'cursor-up',		'p', 'P');
+	$BODY->set_binding( 'cursor-pageup',	'b');
+	$BODY->set_binding( sub { &bsend((KEY_UP())x11) }, 'u', 'U', "\cU");
+
+	$BODY->set_binding( 'cursor-down',		'N', 's', 'S');
+	$BODY->set_binding( 'cursor-pagedown',	'f', "\cF");
+	$BODY->set_binding( sub { &bsend((KEY_DOWN())x11) },	'd', 'D', "\cD");
+
+	$BODY->set_binding( 'cursor-right',	'>');
+	$BODY->set_binding( 'cursor-left',		'<');
+
+	$BODY->set_mouse_binding( sub { &bsend(KEY_UP()) }, 65536);
+	$BODY->set_mouse_binding( sub { &bsend(KEY_DOWN()) }, 2097152);
+
+	#Cycle:
+	if(@PARTS>1) {
+		$BODY->set_binding( sub { $MENU_PART->focus() }, "\t" );
+	} else {
+		$BODY->set_binding( sub { $MENU_VIEW->focus() }, "\t" );
+	}
+	$BODY->set_binding( sub { $MENU_VIEW->focus() }, KEY_BTAB() );
+
+	$MENU_PART->set_binding( sub { $MENU_VIEW->focus() }, KEY_LEFT(), KEY_RIGHT(), "\t" );
+	$MENU_PART->set_binding( sub { $BODY->focus() }, KEY_BTAB() );
+
+	if(@PARTS>1) {
+		$MENU_VIEW->set_binding( sub { $MENU_PART->focus() }, KEY_LEFT(), KEY_RIGHT(), KEY_BTAB() );
+	} else {
+		$MENU_VIEW->set_binding( sub { $MENU_VIEW->focus() }, KEY_LEFT(), KEY_RIGHT() );
+		$MENU_VIEW->set_binding( sub { $BODY->focus() }, KEY_BTAB() );
+	}
+	$MENU_VIEW->set_binding( sub { $BODY->focus() }, "\t" );
+
+	#View menu:
+	$MENU_VIEW->set_binding( 'open-popup', KEY_UP(), KEY_DOWN() );
+
+	#Exit:
+	$CUI->set_binding( sub { $CUI->mainloopExit }, 'q' );
+	$CUI->set_binding( sub { $CUI->mainloopExit }, 'Q' );
+	$CUI->set_binding( sub { $CUI->mainloopExit }, 'x' );
+	$CUI->set_binding( sub { $CUI->mainloopExit }, 'X' );
+
+	#Zoom:
+	$CUI->set_binding( sub { &zoom(20) }, '+' );
+	$CUI->set_binding( sub { &zoom(20) }, '=' );
+	$CUI->set_binding( sub { &zoom(-20) }, '-' );
+	$CUI->set_binding( sub { &zoom(-20) }, '_' );
+}
+
+sub status {
+	$BAR->text(join(' ', @_, '', $MSG, ''));
+}
+
+sub display {
+	my($msg)=@_;
+
+	&parts();
+	&source() if($ARG{'source'});
+	&headers();
+	&menu();
+	&action($MENU_PART);
+	&bindings();
+
+	$BODY->focus();
+
+	$CUI->mainloop;
+
+	return;
+}
+
+my(@MSGS)=();
+
+foreach my $seq (@ARGV?@ARGV:'cur') {
+	push(@MSGS, shellwords(`$MH{'pickproc'} $seq`));
+}
+
+foreach my $msg (@MSGS) {
+	%CACHE=();
+	&mark($msg);
+	&display($msg);
+}
+
+$CUI->leave_curses();
+print "\n";
+
+=head1 AUTHOR
+
+William Totten
+
+=head1 LICENSE
+
+BSD 3-Clause License
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2017, William Totten
+  All rights reserved.
+  
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+  
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+  
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=cut
+

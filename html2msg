@@ -27,6 +27,10 @@ html2msg [-I encoding] [file]
 
 Specify the input encoding character set to use.
 
+=item -c or -cols
+
+With of display.
+
 =item -v or -version
 
 Print version and exit
@@ -50,6 +54,7 @@ Print the software license, then exit.
 my($COLS, $ROWS, $WIDTH, $HEIGHT)=GetTerminalSize(*STDOUT);
 
 my(@OPTIONS)=qw(
+	cols|c=i
 	input-encoding|iencoding|input_encoding|I=s
 	version|v
 	help|h
@@ -75,6 +80,9 @@ if($ARG{'version'}) {
 		-sections => ['LICENSE', 'COPYRIGHT']);
 }
 
+$COLS=$ENV{'COLUMNS'} if($ENV{'COLUMNS'});
+$COLS=$ARG{'cols'} if($ARG{'cols'});
+
 =head1 DESCRIPTION
 
 Reading HTML based email on a terminal is a spotty proposition, and there
@@ -94,10 +102,11 @@ Otherwise, it lets L<w3m(1)> render it.
 
 sub markdown {
 	my(@pandoc)=qw(pandoc -f html -t markdown+pipe_tables);
+	my($cols)=$COLS-1;
 	my($md)=IO::Handle->new;
 	local($/)=undef;
 
-	open($md, '-|', @pandoc, "--columns=$COLS", @_);
+	open($md, '-|', @pandoc, "--columns=$cols", @_);
 	$_=<$md>;
 	close($md);
 
@@ -130,14 +139,46 @@ sub w3m {
 		push(@local, '-I', $ARG{'input-encoding'});
 	}
 
-	open($txt, '-|', @w3m, @local, @_);
+	open($txt, '-|', @w3m, '-cols', $COLS, @local, @_);
 	$_=<$txt>;
 	close($txt);
 
 	print $_;
 }
 
+=pod
+
+One final issue with rendering HTML to text is the continued reliance
+on HTML email with setting the width of things.  In an 80 column
+terminal, this wreaks havoc on any tool's ability to generate reasonable
+output.  B<html2msg> solves this problem by looking for width
+attributes and trying to remove them.  This doesn't always work, but it
+does make an easier to read email more often than it doesn't.
+
+=cut
+
+sub fix_html {
+	my($file)=@_;
+	my($html)=IO::Handle->new;
+	my(@buf)=();
+	local($_);
+
+	open($html, '<', $file);
+	while(<$html>) {
+		s/\swidth="?\d+[%\w]?"?//i;
+		s/\swidth:\s+"?\d+[%\w]?"?//i;
+
+		push(@buf, $_);
+	}
+	close($html);
+
+	open($html, '>', $file);
+	print $html @buf;
+	close($html);
+}
+
 foreach my $file (@ARGV) {
+	&fix_html($file);
 	$SIZE+=(-s $file);
 }
 

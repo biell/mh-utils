@@ -55,7 +55,7 @@ editing the message itself?
 
 The capability is provided with `heynow` to perform that alias expansion
 inside the draft, so you can see and modify it more easilly.  By adding
-the setting `heynow-autoalias: 1` to your *.mh_profile* file, `heynow`
+the setting `heynow-edit: -expand` to your *.mh_profile* file, `heynow`
 will even perform this expansion automatically before each `edit`.  This
 means that a command like `comp -to my_alias` will result in the expanded
 alias being immediately viewable in the draft.
