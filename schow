@@ -30,10 +30,6 @@ passed unaltered and directly to L<show(1)>.
 
 =over 8
 
-=item -f [name] or -field [name]
-
-Add C<name> to the list of fields to display in the buffer.
-
 =item -s or -source
 
 Include a final message part consisting of the entire messsage source.
@@ -76,7 +72,6 @@ Print the software license, then exit.
 =cut
 
 my(@OPTIONS)=qw(
-	field|f=s@
 	inversebar|i
 	boldbar|b
 	source|s
@@ -87,7 +82,6 @@ my(@OPTIONS)=qw(
 	license|L
 );
 my(%ARG)=(
-	'field'		=> ['date', 'from'],
 	'inversebar'	=> 0,
 	'boldbar'		=> 0,
 );
@@ -129,7 +123,7 @@ if($ARG{'version'}) {
 		-sections => ['LICENSE', 'COPYRIGHT']);
 }
 
-push(@{$ARG{'field'}}, 'subject');
+print "\n"x($ENV{'LINES'}-1) if($ENV{'LINES'});
 
 =head1 DESCRIPTION
 
@@ -143,23 +137,17 @@ ensuring access to the context of the message throughout review.
 
 =cut
 
-my($CUI)=Curses::UI->new(-mouse_support => 1, -color_support => 1);
+my($CUI)=Curses::UI->new(
+		-mouse_support => 1,
+		-color_support => 1,
+		-compat => 1,
+	);
 my($WIN)=$CUI->add('schow', 'Window');
-my($HEAD)=$WIN->add('head', 'TextViewer',
-	-height => scalar(@{$ARG{'field'}}),
-	-focusable => 0,
-);
-my($MENU)=$WIN->add('menu', 'Container',
-	-y => scalar(@{$ARG{'field'}}),
-	-height => 1,
-);
-my($BODY)=$WIN->add('body', 'TextViewer',
-	-y => scalar(@{$ARG{'field'}})+1,
-	-showoverflow => 0,
-);
+
+my($HEAD, $MENU, $BAR, $MENU_PART, $MENU_VIEW, $BODY);
 
 my($WIDTH)=$Curses::COLS;
-my($BAR, $MENU_PART, $MENU_VIEW);
+my($HEADERS)=0;
 
 my($MSG)=undef;
 my(@PARTS)=();
@@ -187,28 +175,45 @@ sub mark {
 	return($MSG);
 }
 
+my($HEADER_FORM)=<<'EOT';
+%;
+%; schow.headers
+%;
+%; Default format file for displaying headers with  schow.
+%; schow calls scanproc with this filter to display message header.
+%;
+%; To, Cc, and From are only displayed if non-empty
+%;
+Date:    %<(nodate{date})%{date}%|%(pretty{date})\n%>\
+%<{to}To:      %(decode{to})\n%>\
+%<{cc}Cc:      %(decode{cc})\n%>\
+%<{from}From:    %(decode{from})\n%>\
+Subject: %<{subject}%(decode{subject})%|<no subject>%>
+EOT
+
 sub headers {
 	my(@scan)=($MH{'scanproc'}, 'cur', '-width', '1024');
-	my($header)=IO::Handle->new;
-	my($rs)=chr(036);
-	my($fmt)=join($rs,
-		map(sprintf('%s: %%(decode{%s})', ucfirst($_), $_), @{$ARG{'field'}})
-	);
-	local($/)=undef;
+	my($header, $form)=(IO::Handle->new, IO::Handle->new);
+	my($formfile)=join('/', $MH{'path'}, 'schow.format');
+	local($_);
+
+	unless(-r $formfile) {
+		open($form, '>', $formfile);
+		print $form $HEADER_FORM;
+		close($form);
+	}
 
 	unless($CACHE{'headers'}) {
 		$CACHE{'headers'}=[];
 
-		open($header, '-|', @scan, '-format', $fmt);
-		foreach my $field (split(m/$rs/, <$header>)) {
-			$field=~s/\s+$//s;
-			push(@{$CACHE{'headers'}}, $field);
+		open($header, '-|', @scan, '-form', $formfile);
+		while(<$header>) {
+			chomp;
+			push(@{$CACHE{'headers'}}, $_);
+			$HEADERS++;
 		}
 		close($header);
 	}
-
-	$HEAD->text(join("\n", @{$CACHE{'headers'}}));
-	$HEAD->draw(1);
 }
 
 sub parts {
@@ -512,6 +517,22 @@ sub action {
 	$MENU_VIEW->draw();
 }
 
+sub window {
+	$HEAD=$WIN->add('head', 'TextViewer',
+		-height     => $HEADERS,
+		-focusable  => 0,
+		-text       => join("\n", @{$CACHE{'headers'}}),
+	);
+	$MENU=$WIN->add('menu', 'Container',
+		-y => $HEADERS,
+		-height => 1,
+	);
+	$BODY=$WIN->add('body', 'TextViewer',
+		-y => $HEADERS+1,
+		-showoverflow => 0,
+	);
+}
+
 sub menu {
 	my($selected)=ref($MENU_PART)?($MENU_PART->get()):0;
 	my($indexes)=[];
@@ -639,9 +660,12 @@ sub display {
 	&parts();
 	&source() if($ARG{'source'});
 	&headers();
+
+	&window();
 	&menu();
-	&action($MENU_PART);
 	&bindings();
+
+	&action($MENU_PART);
 
 	$BODY->focus();
 

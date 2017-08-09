@@ -182,7 +182,7 @@ foreach my $file (@ARGV) {
 	$SIZE+=(-s $file);
 }
 
-if($SIZE > 4096) {
+if($SIZE > 3072) {
 	&w3m(@ARGV);
 } else {
 	&markdown(@ARGV);
