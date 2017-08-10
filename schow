@@ -15,7 +15,7 @@ use List::Util qw(min max);
 use Text::ParseWords;
 use Text::Tabs;
 use File::Basename;
-use File::Temp;
+use File::Temp qw(tempfile);
 use Curses;
 use Curses::UI;
 
@@ -29,6 +29,18 @@ All command-line options to B<schow> which are not listed below are
 passed unaltered and directly to L<show(1)>.
 
 =over 8
+
+=item -c or -compat
+
+Set terminal compatibility mode, which tells curses to assume the
+terminal is pretty uncapable, and perform all actions in the simplest
+way.  This is sometimes necessary if the menu drawing boxes don't display
+correctly.
+
+=item -w or -wrapheader
+
+Use line wrapping when constructing the header window.  By default,
+long header lines are accessed via scrolling
 
 =item -s or -source
 
@@ -51,6 +63,10 @@ or may not look different.
 Set the text editor used when requesting to edit attachments
 of MIME type C<text/plain> to be C<program>.
 
+=item -B or -nobeep
+
+Disable terminal beep notifications.
+
 =item -v or -version
 
 Print version and exit
@@ -72,9 +88,13 @@ Print the software license, then exit.
 =cut
 
 my(@OPTIONS)=qw(
+	compat|simple|dumb|c
+	wrapheader|wrapheaders|wraphead|w
 	inversebar|i
-	boldbar|b
-	source|s
+	inversebar|inverse|i
+	boldbar|bold|b
+	source|view-source|s
+	nobeep|B
 	editor|e=s
 	version|v
 	help|h
@@ -87,17 +107,20 @@ my(%ARG)=(
 );
 
 my(@MH_SETTINGS)=qw(
-	editor pathproc showmimeproc lproc listmimeproc storemimeproc
-	scanproc pickproc schow
+	editor pathproc showmimeproc lproc listmimeproc storemimeproc mhlproc
+	scanproc pickproc libdir schow current-folder
 );
 my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
 	`mhparam -all; mhparam @MH_SETTINGS`);
 
 $MH{'pathproc'}||='mhpath';
 $MH{'path'}=`$MH{'pathproc'} +`; chomp($MH{'path'});
+$MH{'current-folder'}||='inbox';
+$MH{'folder'}=join('/', $MH{'path'}, $MH{'current-folder'});
 $MH{'schow'}||='';
 $MH{'listmimeproc'}||='mhlist';
 $MH{'storemimeproc'}||='mhstore';
+$MH{'mhlproc'}||=join('/', $MH{'libdir'}, 'mhl');
 $MH{'scanproc'}||='scan';
 $MH{'pickproc'}||='pick';
 $MH{'editor'}||=$ENV{'EDITOR'} || $ENV{'VISUAL'} || 'vi';
@@ -123,6 +146,8 @@ if($ARG{'version'}) {
 		-sections => ['LICENSE', 'COPYRIGHT']);
 }
 
+$ENV{'ESCDELAY'}=100;
+
 print "\n"x($ENV{'LINES'}-1) if($ENV{'LINES'});
 
 =head1 DESCRIPTION
@@ -138,9 +163,10 @@ ensuring access to the context of the message throughout review.
 =cut
 
 my($CUI)=Curses::UI->new(
-		-mouse_support => 1,
-		-color_support => 1,
-		-compat => 1,
+		-mouse_support  => 1,
+		-color_support  => 1,
+		-compat         => $ARG{'compat'},
+		-debug          => 0,
 	);
 my($WIN)=$CUI->add('schow', 'Window');
 
@@ -149,15 +175,15 @@ my($HEAD, $MENU, $BAR, $MENU_PART, $MENU_VIEW, $BODY);
 my($WIDTH)=$Curses::COLS;
 my($HEADERS)=0;
 
-my($MSG)=undef;
+my($MSG, $MSGFILE)=(undef, undef);
 my(@PARTS)=();
 my(%CACHE);
 
 =pod
 
 B<schow> is an C<mhshow> alternative/replacement.  In all practical ways, it
-acts the same as C<mhshow>.  Just as C<show> and C<mhshow> do, it changes
-the curr
+acts the same as C<mhshow> for interactive use.  Just as C<show> and C<mhshow>
+do, it changes the C<cur> sequence when a message is viewed.
 
 =cut
 
@@ -172,29 +198,35 @@ sub mark {
 	}
 	close($current);
 
+	$MSGFILE=join('/', $MH{'folder'}, $MSG);
+
 	return($MSG);
 }
 
 my($HEADER_FORM)=<<'EOT';
-%;
-%; schow.headers
-%;
-%; Default format file for displaying headers with  schow.
-%; schow calls scanproc with this filter to display message header.
-%;
-%; To, Cc, and From are only displayed if non-empty
-%;
-Date:    %<(nodate{date})%{date}%|%(pretty{date})\n%>\
-%<{to}To:      %(decode{to})\n%>\
-%<{cc}Cc:      %(decode{cc})\n%>\
-%<{from}From:    %(decode{from})\n%>\
-Subject: %<{subject}%(decode{subject})%|<no subject>%>
+;
+; schow.headers
+;
+; Default format file for displaying headers with  schow.
+; schow calls scanproc with this filter to display message header.
+;
+; To, Cc, and From are only displayed if non-empty
+;
+leftadjust,compwidth=9,overflowoffset=9,compress
+Date:formatfield="%<(nodate{text})%{text}%|%(pretty{text})%>"
+To:decode
+cc:decode
+From:decode
+Subject:decode,formatfield="%<{text}%{text}%|<no subject>%>"
 EOT
 
 sub headers {
-	my(@scan)=($MH{'scanproc'}, 'cur', '-width', '1024');
+	my(@show)=($MH{'mhlproc'}, '-nobell', '-noclear', $MSGFILE);
 	my($header, $form)=(IO::Handle->new, IO::Handle->new);
-	my($formfile)=join('/', $MH{'path'}, 'schow.format');
+	my($formfile)=join('/', $MH{'path'}, 'schow.headers');
+	my($width)=$ARG{'wrapheader'}?$WIDTH:1024;
+	my(@head)=();
+	local($Text::Tabs::tabstop)=8;
 	local($_);
 
 	unless(-r $formfile) {
@@ -204,15 +236,26 @@ sub headers {
 	}
 
 	unless($CACHE{'headers'}) {
-		$CACHE{'headers'}=[];
-
-		open($header, '-|', @scan, '-form', $formfile);
+		open($header, '-|', @show, '-width', $width, '-form', $formfile);
 		while(<$header>) {
 			chomp;
-			push(@{$CACHE{'headers'}}, $_);
-			$HEADERS++;
+
+			if(m/^\s+(.*)$/ && length($head[-1])+length($1)<$width) {
+				s/^\s+//;
+				$head[-1]=~s/,$/, /;
+				$head[-1].=expand($_);
+			} else {
+				push(@head, expand($_));
+				$HEADERS++;
+			}
 		}
 		close($header);
+		if($?) {
+			print STDERR "\n\rError reading headers\n";
+			exit;
+		}
+
+		$CACHE{'headers'}=[@head];
 	}
 }
 
@@ -365,7 +408,7 @@ sub editor {
 	my($part)=@_;
 	my(@mhstore)=($MH{'storemimeproc'});
 	my(@editor)=($ARG{'editor'} || $MH{'editor'});
-	my($fh, $temp)=File::Temp::tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
 
 	if($PARTS[$part]{'msg'} && $temp) {
 		system('cp', '-a', $PARTS[$part]{'filename'}, $temp);
@@ -519,17 +562,19 @@ sub action {
 
 sub window {
 	$HEAD=$WIN->add('head', 'TextViewer',
-		-height     => $HEADERS,
-		-focusable  => 0,
-		-text       => join("\n", @{$CACHE{'headers'}}),
+		-height       => $HEADERS,
+		-focusable    => 0,
+		-text         => join("\n", @{$CACHE{'headers'}}),
+		-nobeep       => $ARG{'nobeep'},
 	);
 	$MENU=$WIN->add('menu', 'Container',
-		-y => $HEADERS,
-		-height => 1,
+		-y            => $HEADERS,
+		-height       => 1,
 	);
 	$BODY=$WIN->add('body', 'TextViewer',
-		-y => $HEADERS+1,
+		-y            => $HEADERS+1,
 		-showoverflow => 0,
+		-nobeep       => $ARG{'nobeep'},
 	);
 }
 
@@ -550,37 +595,41 @@ sub menu {
 
 	$BAR=$MENU->add('bar', 'Label',
 		-textalignment => 'right',
-		-width => $Curses::COLS,
-		-reverse => $ARG{'inversebar'},
-		-underline => !$ARG{'inversebar'},
-		-bold => $ARG{'boldbar'},
+		-width         => $Curses::COLS,
+		-reverse       => $ARG{'inversebar'},
+		-underline     => !$ARG{'inversebar'},
+		-bold          => $ARG{'boldbar'},
 		-paddingspaces => 1,
-		-text => $MSG.' ',
+		-text          => $MSG.' ',
 	);
 
 	$MENU_PART=$MENU->add('part', 'Popupmenu',
-		-x => 2,
-		-values => $indexes,
-		-labels => $labels,
-		-selected => $selected,
-		-wraparound => 1,
-		-onchange => \&action,
-		-sbborder => 0,
+		-x            => 2,
+		-values       => $indexes,
+		-labels       => $labels,
+		-selected     => $selected,
+		-wraparound   => 1,
+		-onchange     => \&action,
+		-sbborder     => 0,
+		-nobeep       => $ARG{'nobeep'},
 	);
 
 	$MENU_VIEW=$MENU->add('view', 'Popupmenu',
-		-x => $MENU_PART->width()+3,
-		-values => $views,
-		-selected => 0,
-		-wraparound => 1,
-		-onchange => \&action,
-		-sbborder => 0,
+		-x            => $MENU_PART->width()+3,
+		-values       => $views,
+		-selected     => 0,
+		-wraparound   => 1,
+		-onchange     => \&action,
+		-sbborder     => 0,
+		-nobeep       => $ARG{'nobeep'},
 	);
 
 	$MENU->set_draworder('bar', 'part', 'view');
 }
 
 sub bindings {
+	sub BINDc(&$@) { $_[1]->set_binding($_[0], @_[2 .. $#_]) }
+	sub BINDs($$@) { $_[1]->set_binding($_[0], @_[2 .. $#_]) }
 	sub hsend {
 		foreach my $key (@_) {
 			$HEAD->process_bindings($key);
@@ -595,59 +644,59 @@ sub bindings {
 	}
 
 	#Slide Head:
-	$WIN->set_binding( sub { &hsend((KEY_RIGHT())x2) }, "\e261-1", KEY_NPAGE, KEY_PPAGE() );
-	$WIN->set_binding( sub { &hsend((KEY_LEFT())x2) }, "\e260-1", KEY_PPAGE() );
-	$WIN->set_binding( sub { &hsend(KEY_UP()) }, "\e259-1" );
-	$WIN->set_binding( sub { &hsend(KEY_DOWN()) }, "\e258-1" );
+	BINDc { &hsend((KEY_RIGHT())x2) }  $WIN=>( '>', '.', "\e261-1" );
+	BINDc { &hsend((KEY_LEFT())x2) }   $WIN=>( '<', ',', "\e260-1" );
+	BINDc { &hsend((KEY_UP())) }       $WIN=>( "\e259-1" );
+	BINDc { &hsend((KEY_DOWN())) }     $WIN=>( "\e258-1" );
 
 	#Editor motions:
-	$BODY->set_binding( 'cursor-up',		'p', 'P');
-	$BODY->set_binding( 'cursor-pageup',	'b');
-	$BODY->set_binding( sub { &bsend((KEY_UP())x11) }, 'u', 'U', "\cU");
+	BINDs 'cursor-up',                 $BODY=>( 'p', 'P', 'y', 'Y', "\K" );
+	BINDs 'cursor-pageup',             $BODY=>( 'b', 'B', 'w', 'W' );
+	BINDc { &bsend((KEY_UP())x11) }    $BODY=>( 'u', 'U', "\cU" );
+	BINDc { &bsend((KEY_PPAGE())x20) } $BODY=>( 'g' );
 
-	$BODY->set_binding( 'cursor-down',		'N', 's', 'S');
-	$BODY->set_binding( 'cursor-pagedown',	'f', "\cF");
-	$BODY->set_binding( sub { &bsend((KEY_DOWN())x11) },	'd', 'D', "\cD");
-
-	$BODY->set_binding( 'cursor-right',	'>');
-	$BODY->set_binding( 'cursor-left',		'<');
+	BINDs 'cursor-down',               $BODY=>( 'n', 'N', 's', 'S', 'e', 'E' );
+	BINDs 'cursor-pagedown',           $BODY=>( 'f', "\cF", 'z', 'Z' );
+	BINDc { &bsend((KEY_DOWN())x11) }  $BODY=>( 'd', 'D', "\cD" );
+	BINDc { &bsend((KEY_NPAGE())x20) } $BODY=>( KEY_END(), 'G' );
 
 	$BODY->set_mouse_binding( sub { &bsend(KEY_UP()) }, 65536);
 	$BODY->set_mouse_binding( sub { &bsend(KEY_DOWN()) }, 2097152);
 
 	#Cycle:
 	if(@PARTS>1) {
-		$BODY->set_binding( sub { $MENU_PART->focus() }, "\t" );
+		BINDc { $MENU_PART->focus() } $BODY=>( "\t" );
+		BINDc { $MENU_PART->focus() }  $WIN=>( 'a', 'A' );
 	} else {
-		$BODY->set_binding( sub { $MENU_VIEW->focus() }, "\t" );
+		BINDc { $MENU_VIEW->focus() } $BODY=>( "\t" );
 	}
-	$BODY->set_binding( sub { $MENU_VIEW->focus() }, KEY_BTAB() );
+	BINDc { $MENU_VIEW->focus() }      $BODY=>( KEY_BTAB );
+	BINDc { $MENU_VIEW->focus() }       $WIN=>( 'v', 'V' );
 
-	$MENU_PART->set_binding( sub { $MENU_VIEW->focus() }, KEY_LEFT(), KEY_RIGHT(), "\t" );
-	$MENU_PART->set_binding( sub { $BODY->focus() }, KEY_BTAB() );
+	BINDc { $MENU_VIEW->focus() } $MENU_PART=>( KEY_LEFT, KEY_RIGHT, "\t" );
+	BINDc { $BODY->focus() }      $MENU_PART=>( KEY_BTAB );
 
 	if(@PARTS>1) {
-		$MENU_VIEW->set_binding( sub { $MENU_PART->focus() }, KEY_LEFT(), KEY_RIGHT(), KEY_BTAB() );
+		BINDc { $MENU_PART->focus() }
+		                         $MENU_VIEW=>( KEY_LEFT, KEY_RIGHT, KEY_BTAB);
 	} else {
-		$MENU_VIEW->set_binding( sub { $MENU_VIEW->focus() }, KEY_LEFT(), KEY_RIGHT() );
-		$MENU_VIEW->set_binding( sub { $BODY->focus() }, KEY_BTAB() );
+		BINDc { 'noop'; }        $MENU_VIEW=>( KEY_LEFT, KEY_RIGHT );
+		BINDc { $BODY->focus() } $MENU_VIEW=>( KEY_BTAB );
 	}
-	$MENU_VIEW->set_binding( sub { $BODY->focus() }, "\t" );
+	BINDc { $BODY->focus() }      $MENU_VIEW=>( "\t" );
 
 	#View menu:
-	$MENU_VIEW->set_binding( 'open-popup', KEY_UP(), KEY_DOWN() );
-
-	#Exit:
-	$CUI->set_binding( sub { $CUI->mainloopExit }, 'q' );
-	$CUI->set_binding( sub { $CUI->mainloopExit }, 'Q' );
-	$CUI->set_binding( sub { $CUI->mainloopExit }, 'x' );
-	$CUI->set_binding( sub { $CUI->mainloopExit }, 'X' );
+	BINDs 'open-popup',           $MENU_VIEW=>( KEY_UP, KEY_DOWN );
 
 	#Zoom:
-	$CUI->set_binding( sub { &zoom(20) }, '+' );
-	$CUI->set_binding( sub { &zoom(20) }, '=' );
-	$CUI->set_binding( sub { &zoom(-20) }, '-' );
-	$CUI->set_binding( sub { &zoom(-20) }, '_' );
+	BINDc { &zoom(20) }                 $CUI=>( '+', '=' );
+	BINDc { &zoom(-20) }                $CUI=>( '-', '_' );
+
+	#Global Keys
+	BINDc { $BODY->focus() }            $CUI=>( "\e" );
+	BINDc { $CUI->mainloopExit }        $CUI=>( 'q', 'Q', 'x', 'X', "\cC" );
+	BINDc { $CUI->{-canvasscr}->redrawwin() }
+	                                    $CUI=>( 'r', 'R', "\cR", "\cL" );
 }
 
 sub status {
@@ -674,20 +723,50 @@ sub display {
 	return;
 }
 
-my(@MSGS)=();
+sub messages {
+	my(@msgs)=();
 
-foreach my $seq (@ARGV?@ARGV:'cur') {
-	push(@MSGS, shellwords(`$MH{'pickproc'} $seq`));
+	foreach my $seq (@_) {
+		push(@msgs, shellwords(`$MH{'pickproc'} $seq`));
+	}
+
+	foreach my $msg (@msgs) {
+		%CACHE=();
+		&mark($msg);
+		&display($msg);
+	}
 }
 
-foreach my $msg (@MSGS) {
-	%CACHE=();
-	&mark($msg);
-	&display($msg);
+if(@ARGV) {
+	&messages(@ARGV);
+} else {
+	&messages('cur');
 }
 
 $CUI->leave_curses();
 print "\n";
+
+=head1 EXAMPLES
+
+B<schow> can be called directly, or configured as your MIME show proc
+for specific binaries.
+C<DO NOT SET schow AS showmimeproc IN YOUR .mh_profile>.
+Doing so will have disasterous consequences for any program expecting
+to read from C<mhshow>, really please don't try it.  B<schow> itself,
+needs access to the C<mhshow> binary, and looks at the C<showmimeproc>
+variable in your F<.mh_profile> to find it.  You can, however,
+specify that standard interactive commands use B<schow> for displaying
+MIME message by placing the following in your F<.mh_profile>:
+
+  show: -showmimeproc schow
+  prev: -showmimeproc schow
+  next: -showmimeproc schow
+
+Assuming, of course, that B<schow> is in your path.  If you prefer to use
+the standard commands most of the time, and save B<schow> for occasions
+where messages are complex, remember that C<schow>, C<schow prev>, and
+C<schow next> will work the same as C<show>, C<prev>, and C<next>,
+respectively.
 
 =head1 AUTHOR
 
