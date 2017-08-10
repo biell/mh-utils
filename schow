@@ -102,8 +102,9 @@ my(@OPTIONS)=qw(
 	license|L
 );
 my(%ARG)=(
-	'inversebar'	=> 0,
-	'boldbar'		=> 0,
+	'inversebar'  => 0,
+	'boldbar'     => 0,
+	'nobeep'      => 0,
 );
 
 my(@MH_SETTINGS)=qw(
@@ -203,6 +204,23 @@ sub mark {
 	return($MSG);
 }
 
+=head2 Message Headers
+
+The top of the screen holds the header information from the message.
+The format of this content is stored in the users F<Mail> directory,
+in a file named F<schow.headers>.  If this file doesn't exist, B<schow>
+creates it.  You can modify the contents to suit your needs. If you
+want to restore it to the default values, simply remove it and the
+default will be installed the next time you run B<schow>.
+
+This file will be interpreted by C<mhl> and follows all C<mhl> format
+file conventions.  C<mhl> will be called with a C<-width> parameter
+to specify the size of the screen in the case that the B<schow>
+command-line parameter C<-wrapheaders> is used.  Otherwise, any header
+which spans multiple lines will be joined into one long line.
+
+=cut
+
 my($HEADER_FORM)=<<'EOT';
 ;
 ; schow.headers
@@ -258,6 +276,34 @@ sub headers {
 		$CACHE{'headers'}=[@head];
 	}
 }
+
+=head2 Multipart Messages
+
+One of the most important advancements of B<schow> over the standard
+C<show> or enhanced C<mhshow> commands is with respect to the treatment
+of multipart messages and attachments.  B<schow> combines the tools
+C<mhlist>, C<mhshow>, and C<mhstore> into one program (literally, as
+it actually calls those programs to perform its work) whose purpose is
+to simplfiy MH MIME message handling.
+
+The display (e.g. non C<multipart/?> container) parts of a message will
+be used by B<schow> to create an message part menu, provide an C<about>
+menu option describing the message part, be used to provide other
+message part options like opening, editing, and saving.
+
+Because B<schow> provides such an easy and intuitive interface to
+attachments, its behaviour is different from both the old and new
+nmh C<mhshow> behaviour with respect to displaying the "body" of
+the message.  By default nmh (prior to 1.6) would show each viewable
+content part seperately.  With 1.6, nmh defaults to showing all the
+appropriate C<text/?> parts.  B<schow> is different in that it inspects
+each part to determine if it is part of the original message body, or
+meant to be an attachment.  Based on this analysis, parts are marked
+for default "body" view, or to only be accessed as an attachment.
+Attachment parts which are of content type C<text/?> may still be viewed
+inside B<schow>, just by themselves.
+
+=cut
 
 sub parts {
 	my(@mhlist)=($MH{'listmimeproc'},
@@ -326,6 +372,17 @@ sub parts {
 	}
 }
 
+=pod
+
+A special message part may be listed if the C<-source> command-line
+option is used.  This option creates a "message part" entry entitled
+C<View Source> which contains the unmodified source text of the
+entire email.  This option is useful if you like to review all the
+message headers of an email, or if you wish to inspect the seperate
+MIME parts for issues.
+
+=cut
+
 sub source {
 	my(@mhpath)=($MH{'pathproc'});
 	my($path, $raw)=(IO::Handle->new, IO::Handle->new);
@@ -375,6 +432,87 @@ sub info {
 
 	$BODY->text($CACHE{$PARTS[$part]}{'info'});
 	#$BODY->focus();
+}
+
+sub user {
+	my($view, $part)=@_;
+	my($type, $subtype)=split(m(/), $PARTS[$part]{'type'});
+	my(@mhstore)=($MH{'storemimeproc'});
+	my(@show)=();
+	my($body)=IO::Handle->new;
+	my(@text)=();
+	my($pause)=0;
+	my($xstdin)=0;
+	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+	local($_);
+
+	unless($CACHE{$PARTS[$part]}{$view}) {
+		if(exists($MH{"schow-$view-$type/$subtype"})) {
+			push(@show, $MH{"schow-$view-$type/$subtype"});
+		} elsif(exists($MH{"schow-$view-$type"})) {
+			push(@show, $MH{"schow-$view-$type"});
+		} else {
+			$BODY->text('Cannot find an mh_profile entry for this type');
+			return(1);
+		}
+
+		foreach(@show) {
+			if(s|%l||g) {
+				push(@text, sprintf('part %-8s %-25s %d',
+					@{$PARTS[$part]}{'part', 'type', 'size'}));
+			}
+			if(s|%p||g) {
+				$pause=1;
+			}
+
+			1 while(s|%\{(.*?)\}|$PARTS[$part]{$1}|);
+
+			s|%a|$type/$subtype|g;
+			s|'?%f'?|'$temp'|g;
+			s|'?%F'?|'$temp'|g and $xstdin=1;
+			s|%s|$subtype|g;
+			s|%d|$PARTS[$part]{'description'}|g;
+			s|%%|%|g;
+		}
+
+		system(@mhstore, '-outfile', $temp, '-part', $PARTS[$part]{'part'});
+
+		if($xstdin) {
+			$CUI->leave_curses();
+			#mhshow uses shell interpolation, so I have to also :(
+			if($xstdin) {
+				system("@show");
+			} else {
+				system("@show <$temp");
+			}
+			if($pause) {
+				print "\r                        \rPress [ENTER] to return";
+				getc(STDIN);
+			}
+			$CUI->reset_curses();
+
+			return(0);
+		} else {
+			#mhshow uses shell interpolation, so I have to also :(
+			if($xstdin) {
+				open($body, "@show |");
+			} else {
+				open($body, "@show <$temp |");
+			}
+			while(<$body>) {
+				chomp;
+
+				push(@text, $_);
+			}
+			close($body);
+
+			unlink($temp);
+
+			$CACHE{$PARTS[$part]}{$view}=\@text;
+		}
+	}
+
+	$BODY->text(join("\n", @{$CACHE{$PARTS[$part]}{$view}}));
 }
 
 sub save {
@@ -462,7 +600,7 @@ sub show {
 					s/\s$//;
 				}
 			}
-			push(@text, @{$CUI->text_wrap(expand($_), $WIDTH)});
+			push(@text, @{$CUI->text_wrap(expand($_), $WIDTH+1)});
 		}
 		close($body);
 
@@ -497,21 +635,34 @@ sub zoom {
 	&show($part);
 }
 
+foreach my $view (grep(m/^schow-(show|about|open|save|editor)-/, keys(%MH))) {
+	my($new)=$view;
+
+	$new=~s/^schow-(show|about|open|save|editor)-/schow-${1}2-/;
+	$MH{$new}=$MH{$view};
+	delete($MH{$view});
+}
+
 sub view {
 	local($_)=@_;
+	my($type, $subtype)=split(m|/|);
 	my(@views)=();
 	my($text)='pgp-signature|x-c?sh|x-script|xml';
 
+	foreach my $method (grep(m(^schow-.*?-$type(/$subtype)?$), keys(%MH))) {
+		push(@views, $1) if($method=~m(^schow-(.*?)-$type));
+	}
+
 	if(m(text/plain)) {
-		@views=qw( show about editor save );
+		@views=('show', @views, 'about', 'editor', 'save');
 	} elsif(m(text/)) {
-		@views=qw( show about open editor save );
+		@views=('show', @views, 'about', 'open', 'editor', 'save');
 	} elsif(m(message/)) {
-		@views=qw( show about open save );
+		@views=('show', @views, 'about', 'open', 'save');
 	} elsif(m(application/($text))) {
-		@views=qw( show about open save );
+		@views=('show', @views, 'about', 'open', 'save');
 	} else {
-		@views=qw( about open save );
+		@views=('about', @views, 'open', 'save');
 	}
 
 	return([@views]);
@@ -530,23 +681,28 @@ sub action {
 
 	$view=$MENU_VIEW->get();
 
-	if($view=~m/save/) {
+	if($view eq 'save') {
 		&save($part);
 		$MENU_VIEW->{-selected}=0;
-	} elsif($view=~m/open/) {
+	} elsif($view eq 'open') {
 		&open($part);
 		$MENU_VIEW->{-selected}=0;
-	} elsif($view=~m/editor/) {
+	} elsif($view eq 'editor') {
 		&editor($part);
 		$MENU_VIEW->{-selected}=0;
 	}
 
 	$view=$MENU_VIEW->get();
 
-	if($view=~m/show/) {
+	if($view eq 'show') {
 		&show($part);
-	} elsif($view=~m/about/) {
+	} elsif($view eq 'about') {
 		&info($part);
+	} else {
+		unless(&user($view, $part)) {
+			$MENU_VIEW->{-selected}=0;
+			$view=$MENU_VIEW->get();
+		}
 	}
 
 	if($ARG{'boldbar'}) {
@@ -616,6 +772,7 @@ sub menu {
 
 	$MENU_VIEW=$MENU->add('view', 'Popupmenu',
 		-x            => $MENU_PART->width()+3,
+		-width        => 12,
 		-values       => $views,
 		-selected     => 0,
 		-wraparound   => 1,
