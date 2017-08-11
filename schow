@@ -419,6 +419,20 @@ sub source {
 	close($raw);
 }
 
+=head2 About Parts
+
+An additional feature of B<schow> is that, for each message part,
+you can display the known information about that part.  This information
+will contain the size, Content-Type, filename if one exists, dispostion,
+and possibly more.  This can be helpful to get more information about
+an attachment before deciding what to do with it.
+
+For messages which cannot be displayed on a terminal screen, this is
+the content which comes up when you first navigate to a message part.
+This is really useful for images, audio files, etc.  From this screen,
+you can choose to open or save the binary file.
+
+=cut
 
 sub info {
 	my($part)=@_;
@@ -434,86 +448,14 @@ sub info {
 	#$BODY->focus();
 }
 
-sub user {
-	my($view, $part)=@_;
-	my($type, $subtype)=split(m(/), $PARTS[$part]{'type'});
-	my(@mhstore)=($MH{'storemimeproc'});
-	my(@show)=();
-	my($body)=IO::Handle->new;
-	my(@text)=();
-	my($pause)=0;
-	my($xstdin)=0;
-	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
-	local($_);
+=head2 Saving Message Parts
 
-	unless($CACHE{$PARTS[$part]}{$view}) {
-		if(exists($MH{"schow-$view-$type/$subtype"})) {
-			push(@show, $MH{"schow-$view-$type/$subtype"});
-		} elsif(exists($MH{"schow-$view-$type"})) {
-			push(@show, $MH{"schow-$view-$type"});
-		} else {
-			$BODY->text('Cannot find an mh_profile entry for this type');
-			return(1);
-		}
+B<schow> comes with a built-in, familiar looking save file dialog
+to help you save messages.  Directory navigation is part of the
+dialog, and so you can select the directory and filename to save
+the attachment.
 
-		foreach(@show) {
-			if(s|%l||g) {
-				push(@text, sprintf('part %-8s %-25s %d',
-					@{$PARTS[$part]}{'part', 'type', 'size'}));
-			}
-			if(s|%p||g) {
-				$pause=1;
-			}
-
-			1 while(s|%\{(.*?)\}|$PARTS[$part]{$1}|);
-
-			s|%a|$type/$subtype|g;
-			s|'?%f'?|'$temp'|g;
-			s|'?%F'?|'$temp'|g and $xstdin=1;
-			s|%s|$subtype|g;
-			s|%d|$PARTS[$part]{'description'}|g;
-			s|%%|%|g;
-		}
-
-		system(@mhstore, '-outfile', $temp, '-part', $PARTS[$part]{'part'});
-
-		if($xstdin) {
-			$CUI->leave_curses();
-			#mhshow uses shell interpolation, so I have to also :(
-			if($xstdin) {
-				system("@show");
-			} else {
-				system("@show <$temp");
-			}
-			if($pause) {
-				print "\r                        \rPress [ENTER] to return";
-				getc(STDIN);
-			}
-			$CUI->reset_curses();
-
-			return(0);
-		} else {
-			#mhshow uses shell interpolation, so I have to also :(
-			if($xstdin) {
-				open($body, "@show |");
-			} else {
-				open($body, "@show <$temp |");
-			}
-			while(<$body>) {
-				chomp;
-
-				push(@text, $_);
-			}
-			close($body);
-
-			unlink($temp);
-
-			$CACHE{$PARTS[$part]}{$view}=\@text;
-		}
-	}
-
-	$BODY->text(join("\n", @{$CACHE{$PARTS[$part]}{$view}}));
-}
+=cut
 
 sub save {
 	my($part)=@_;
@@ -530,6 +472,37 @@ sub save {
 	$BODY->focus();
 }
 
+=head2 Opening Message Parts
+
+B<schow> replaces C<mhshow> when it comes to the interactive display of
+messages, but there is no reason for it to re-invent the wheel.  When
+B<schow> doesn't know how to render a message part, it calls the good
+old C<mhshow> binary to do it instead.  This means you only have to
+configure message attachment programs for one tool, and the experience
+is the same regardless of which tool you use.  This allows for a
+consistent interface which is easy to switch between for those who
+choose to do so.
+
+B<schow> actually uses your MH C<showmimeproc> configuration, so if you
+have an existing C<mhshow> wrapper, that will be used here.  Unfortunately,
+this means that you cannot set C<showmimeproc> to B<schow>, as that will
+break lots of things.  In the L<NOTES> section below, an example of
+how to use B<schow> for the interactive commands C<show>, C<next>, and
+C<prev> exists.
+
+Some C<mhshow-show-type> configurations use the C<%F> parameter which
+requires terminal input for the running program.  Because of this,
+B<schow> will suspend the curses interface when opening attachments.
+When C<mhshow> returns (which may be immediate for some content types,
+then the interfaces restarts as well.  For those situations, you should
+be very carefull that the program holds onto the temporary file, because
+B<schow> will delete it the second it resumes control of the user
+experience.  If you want message/rfc822 message
+parts to be displayed with B<schow> you would need to configure C<mhshow>
+to use B<schow> for that content type.
+
+=cut
+
 sub open {
 	my($part)=@_;
 	my(@show)=($MH{'showmimeproc'}, '-form', 'mhl.body');
@@ -541,6 +514,16 @@ sub open {
 	}
 	$BODY->focus();
 }
+
+=head2 text/plain Alternative Viewing in an Editor
+
+In addition to the default screen presentation of C<text/plain> message
+parts, your favorite editor may also be invoked.  The editor is invoked
+on a temporary file which is permissioned read/write.  So, you can make
+changes to the message part, but you will need to save those changes to
+an alternate location if you wish them to be preserved.
+
+=cut
 
 sub editor {
 	my($part)=@_;
@@ -564,6 +547,18 @@ sub editor {
 	unlink($temp);
 	$BODY->focus();
 }
+
+=head2 Message Text
+
+Any message parts which are of content type text and don't appear
+to be attachments will be displayed in the standard message body
+window after B<schow> is invoked.  B<schow> uses C<mhshow>,
+or whatever you have set C<showmimeproc> to, for displaying the
+message content.  This means that your standard HTML to text
+conversion methods defined for C<mhshow> will be used by
+B<schow> for content conversion.
+
+=cut
 
 sub show {
 	my($part)=@_;
@@ -616,24 +611,185 @@ sub show {
 	#$BODY->focus();
 }
 
-sub zoom {
-	my($delta)=@_;
-	my($part)=$MENU_PART->get();
+=head2 User Defined/Auxillary Actions
 
-	if($delta<0 && $WIDTH<=40) {
-		return(undef);
-	} elsif($delta>0 && $WIDTH>=320) {
-		return(undef);
+B<schow> provides an interface to augment the standard message part
+view menu with user defined actions.  With the standard C<mhshow>
+interface, you can only specify one program per content type or
+subtype.  However, it is more often the case when document viewing
+is emulated that different programs may work better for different
+files.  This interface allows them to all be defined, and then the
+user can pick the different methods until the best one is found.
+
+This interface works very similar to the C<mhshow-show-type> interface.
+If your F<.mh_profile> had the following lines defined:
+
+  schow-pdf2txt-application/pdf: pdftotext -layout -nopgbrk '%f' -     
+  schow-pdfinfo-application/pdf: pdfinfo '%f'
+
+Then, for messages with content type C<application> and subtype
+C<pdf>, two additional view menu items will be available in addition
+to the standard C<about>, C<save>, and C<open> which would normally
+be there for PDF files.  Those entries will be entitled C<pdf2txt> and
+C<pdfinfo>.  The first one will attempt to convert the PDF into an
+ASCII text representation and display it in the standard body viewer.
+The second one will display helpful information about the PDF, like
+resolution and paper type to the standard body viewer window.  Whatever
+the string is in the middle section, that will be the menu label.
+
+The C<%> sequences are the same as C<mhshow> and are as follows:
+
+=over 8
+
+=item %l
+
+Prepend the message output with a simple line listing the part
+number, MIME content type, and message part size.
+
+=item %p
+
+When a command line contains the C<%F> sequence, it drops out of
+curses mode and runs the program interactively.  If the C<%p>
+sequence is also present, you will be prompted before B<schow>
+retakes control of the screen and re-enables curses.  Ironically,
+this sequence is dropped from more recent versions of MH, but it
+provides an important function for B<schow>.
+
+=item %f
+
+Replace with the filename of the temporary file.  If the C<%f>
+is not surrounded by single quotes, they will be added.  When
+C<%f> is used, the command will not have access to the terminal,
+and control will remain with B<schow>.  The temporary file
+will be available via the command line, and via STDIN.
+C<%f> should be used whenever it is functional, it is the prefered
+way to send a filename to a command.
+
+=item %F
+
+Replace with the filename of the temporary file, and provide the
+command will access to terminal input.  If C<%F> is not surrounded
+by single quotes, they will be added.  C<%F> should only ever be
+used if terminal input is required.  When C<%F> is used, B<schow>
+will suspend curses, provide full control to the command, and then
+restablish control after the command has exited.
+
+=item %{parameter}
+
+Substitute in C<parameter> from the Content-Type field.  This field
+will not automatically be quoted for you.
+
+=item %a
+
+Provide the full MIME content type as an argument to the command.
+
+=item %s
+
+Provide the MIME content subtype as an argument to the command.
+
+=item %d
+
+Provide the MIME message part description on the command-line.  If
+this sequence is not surrounded by single quotes already, they will
+be added.
+
+=item %%
+
+Produce a single percent (%) sign.
+
+=back
+
+=cut
+
+sub user {
+	my($view, $part)=@_;
+	my($type, $subtype)=split(m(/), $PARTS[$part]{'type'});
+	my(@mhstore)=($MH{'storemimeproc'});
+	my(@show)=();
+	my($body)=IO::Handle->new;
+	my(@text)=();
+	my($pause)=0;
+	my($xstdin)=0;
+	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+	local($_);
+
+	unless($CACHE{$PARTS[$part]}{$view}) {
+		if(exists($MH{"schow-$view-$type/$subtype"})) {
+			push(@show, $MH{"schow-$view-$type/$subtype"});
+		} elsif(exists($MH{"schow-$view-$type"})) {
+			push(@show, $MH{"schow-$view-$type"});
+		} else {
+			$BODY->text('Cannot find an mh_profile entry for this type');
+			return(1);
+		}
+
+		foreach(@show) {
+			if(s|%l||g) {
+				push(@text, sprintf('part %-8s %-25s %d',
+					@{$PARTS[$part]}{'part', 'type', 'size'}));
+			}
+			if(s|%p||g) {
+				$pause=1;
+			}
+
+			1 while(s|%\{(.*?)\}|$PARTS[$part]{$1}|);
+
+			s|%a|$type/$subtype|g;
+			s|'?%f'?|'$temp'|g;
+			s|'?%F'?|'$temp'|g and $xstdin=1;
+			s|%s|$subtype|g;
+			s|'?%d'?|'$PARTS[$part]{"description"}'|g;
+			s|%%|%|g;
+		}
+
+		system(@mhstore, '-outfile', $temp, '-part', $PARTS[$part]{'part'});
+
+		if($xstdin) {
+			$CUI->leave_curses();
+			#mhshow uses shell interpolation, so I have to also :(
+			if($xstdin) {
+				system("@show");
+			} else {
+				system("@show <$temp");
+			}
+			if($pause) {
+				print "\r                        \rPress [ENTER] to return";
+				getc(STDIN);
+			}
+			$CUI->reset_curses();
+
+			return(0);
+		} else {
+			#mhshow uses shell interpolation, so I have to also :(
+			if($xstdin) {
+				open($body, "@show |");
+			} else {
+				open($body, "@show <$temp |");
+			}
+			while(<$body>) {
+				chomp;
+
+				push(@text, $_);
+			}
+			close($body);
+
+			unlink($temp);
+
+			$CACHE{$PARTS[$part]}{$view}=\@text;
+		}
 	}
 
-	foreach my $part (values(%CACHE)) {
-		delete($part->{'show'}) if(ref($part) eq 'HASH' && !$part->{'source'});
-	}
-	$WIDTH+=$delta;
-	$ENV{'COLUMNS'}=$WIDTH;
-
-	&show($part);
+	$BODY->text(join("\n", @{$CACHE{$PARTS[$part]}{$view}}));
 }
+
+=pod
+
+You should not try to name your menu items after the standard
+ones of C<show>, C<about>, C<open>, C<save>, or C<editor>.  If you
+do, they will be renamed to be suffixed by the number 2.  The built-in
+methods are treaded specially, and cannot be overridden.
+
+=cut
 
 foreach my $view (grep(m/^schow-(show|about|open|save|editor)-/, keys(%MH))) {
 	my($new)=$view;
@@ -643,30 +799,62 @@ foreach my $view (grep(m/^schow-(show|about|open|save|editor)-/, keys(%MH))) {
 	delete($MH{$view});
 }
 
+=pod
+
+B<schow> will taylor the menu of default actions based on the
+message part content type, and it may seem like a good idea to
+provide a standard function when one is missing, but that is simply
+not possible.  The number C<2> will always be appended to ensure
+the special processing of built-ins is not accidentally attempted.
+
+Just like with C<mhshow>, first an attempt will be made to match
+against the C<type/subtype>.  If that fails, then a match aginst
+just C<type> is attempted.  It is probably best to avoid reusing
+the same menu name to avoid confustion.  The following lines
+will function in a deterministic fashion, but are not recommended
+for people due to possible user confusion about which command will
+be run when the item is selected.
+
+  schow-display-image: xv '%f'
+  schow-display-image/x-xcf: gimp '%f'
+
+=cut
+
 sub view {
 	local($_)=@_;
 	my($type, $subtype)=split(m|/|);
+	my(%user)=();
 	my(@views)=();
 	my($text)='pgp-signature|x-c?sh|x-script|xml';
 
 	foreach my $method (grep(m(^schow-.*?-$type(/$subtype)?$), keys(%MH))) {
-		push(@views, $1) if($method=~m(^schow-(.*?)-$type));
+		$user{$1}=1 if($method=~m(^schow-(.*?)-$type));
 	}
 
 	if(m(text/plain)) {
-		@views=('show', @views, 'about', 'editor', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'editor', 'save');
 	} elsif(m(text/)) {
-		@views=('show', @views, 'about', 'open', 'editor', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'open', 'editor', 'save');
 	} elsif(m(message/)) {
-		@views=('show', @views, 'about', 'open', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'open', 'save');
 	} elsif(m(application/($text))) {
-		@views=('show', @views, 'about', 'open', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'open', 'save');
 	} else {
-		@views=('about', @views, 'open', 'save');
+		@views=('about', sort(keys(%user)), 'open', 'save');
 	}
 
 	return([@views]);
 }
+
+=head2 View Actions
+
+When performing a view action which does not have a standard text
+representation, B<schow> will execute the requested action and then
+reset the view to one which does.  For text based message parts, this
+should be the C<show> action and for binary files, this is normally
+the C<about> action.
+
+=cut
 
 sub action {
 	my($menu)=@_;
@@ -714,6 +902,25 @@ sub action {
 
 	$MENU_PART->draw();
 	$MENU_VIEW->draw();
+}
+
+sub zoom {
+	my($delta)=@_;
+	my($part)=$MENU_PART->get();
+
+	if($delta<0 && $WIDTH<=40) {
+		return(undef);
+	} elsif($delta>0 && $WIDTH>=320) {
+		return(undef);
+	}
+
+	foreach my $part (values(%CACHE)) {
+		delete($part->{'show'}) if(ref($part) eq 'HASH' && !$part->{'source'});
+	}
+	$WIDTH+=$delta;
+	$ENV{'COLUMNS'}=$WIDTH;
+
+	&show($part);
 }
 
 sub window {
@@ -903,7 +1110,7 @@ if(@ARGV) {
 $CUI->leave_curses();
 print "\n";
 
-=head1 EXAMPLES
+=head1 NOTES
 
 B<schow> can be called directly, or configured as your MIME show proc
 for specific binaries.
