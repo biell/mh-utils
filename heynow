@@ -158,7 +158,7 @@ if($ARG{'version'}) {
 	$MH{'draft'}=join('/', $ENV{'HOME'}, $MH{'path'}, 'draft');
 }
 
-$MH{'editor'}=$ARG{'editor'} if($ARG{'editor'});
+$MH{'editor'}=$ARG{'editor'} || $ENV{'mheditor'} || $MH{'editor'} || 'vi';
 $MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'};
 $MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
 $MH{'backup'}=$MH{'draft'}; $MH{'backup'}=~s|/([^/]+)$|/,$1.bak|;
@@ -338,6 +338,12 @@ includes MIME headers).
 
 Default arguments may be set in F<.mh_profile> with C<heynow-include>.
 
+=head3 group
+
+This option can be used when replying to message and works like
+`repl -group` such that it copies the original C<cc:> list into
+the draft.  It is useful if you forget to reply-all to your message.
+
 =head3 expand [-list|-verbose]
 
 Expand aliases used in the current draft.  You can review the expansion
@@ -485,6 +491,7 @@ to send your entire keyring.
 			'display [<switches>]',
 			'list [<switches>]',
 			'include [-format file] [-full|-plain]',
+			'group',
 			'expand [-list|-verbose]',
 			'alias [-add|-delete|-edit] [name] [address-list|[-component field]]',
 			'send [<switches>]',
@@ -764,7 +771,7 @@ to send your entire keyring.
 			} elsif(m/^[\w-]+:/) {
 				if(@recipients) {
 					$line=&wrap_head($header, &aliproc(@recipients));
-					print $expand $line;
+					print $expand $line, "\n";
 					print $line if($arg{'list'} || $arg{'verbose'});
 				} elsif($header) {
 					print $expand $header, ":\n";
@@ -781,7 +788,7 @@ to send your entire keyring.
 			} elsif(m/^--------/) {
 				if($header && @recipients) {
 					$line=&wrap_head($header, &aliproc(@recipients));
-					print $expand $line;
+					print $expand $line, "\n";
 					print $line if($arg{'list'} || $arg{'verbose'});
 				}
 				print $expand $_;
@@ -799,6 +806,44 @@ to send your entire keyring.
 		close($expand);
 
 		rename($MH{'temp'}, $MH{'draft'}) unless($arg{'list'});
+	},
+
+	'group'	=> sub {
+		my(@get)=($MH{'annoproc'}, '-list', '-component', 'cc');
+		my($anno, $repl, $group)=map(IO::Handle->new, 1..3);
+		my(@cc)=();
+		my($msg);
+
+		if($MH{'altmsg'}) {
+			$msg=basename($MH{'altmsg'});
+
+			open($anno, '-|', @get, '-draft');
+			while(<$anno>) {
+				push(@cc, &parse_addrs($_));
+			}
+			close($anno);
+
+			open($anno, '-|', @get, $msg);
+			while(<$anno>) {
+				push(@cc, &parse_addrs($_));
+			}
+			close($anno);
+
+			if(@cc) {
+				open($repl, '<', $MH{'draft'});
+				open($group, '>', $MH{'temp'});
+				while(<$repl>) {
+					s/^(cc):.*$/&wrap_head($1, @cc)/ie;
+					print $group $_;
+				}
+				close($group);
+				close($repl);
+
+				rename($MH{'temp'}, $MH{'draft'});
+			}
+		} else {
+			print 'group is not valid in this mode', "\n";
+		}
 	},
 
 	'alias'	=> sub {
@@ -1464,7 +1509,7 @@ sub wrap_head {
 		}
 	}
 
-	return(join("\n", @rows, ''));
+	return(join("\n", @rows));
 }
 
 
@@ -1807,6 +1852,12 @@ while(1) {
 		print " -$cmd unknown. Hit <CR> for help.\n";
 	}
 }
+
+=head1 BUGS
+
+nmh is really particular about having C<-inplace> options to preserve
+links, and B<heynow> doesn't have those.  All edits occur as if
+C<-noinplace> was used.  That is something to work on.
 
 =head1 SEE ALSO
 

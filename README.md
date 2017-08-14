@@ -82,6 +82,48 @@ this functionality.
 N.B. Only the `gpg` program is supported at this time.
 
 
+schow
+-----
+
+The `schow` program is a curses based replacement for the interactive
+part of `mhshow`.  It combines the efforts of `mhshow`, `mhlist`, and
+`mhstore` into one program (and uses them to do the heavy lifting) to
+simplify email reading.
+
+#### Interface
+
+  1. The top of the interface contains a locked header section.  This
+     section will not scroll off the screen while the message is being
+	viewed.  To keep this message small, long headers are not line
+	wrapped.  Instead, you can use the `<` and `>` keys to scroll
+	across the lines.
+
+  2. The menu contains a drop-down for each part (if the message is
+     multipart), a "view" menu which can be used to see the message
+	in different ways (or to save it), the message number being
+	viewed, and a status section which is used to convey information
+	about the message to the viewer (e.g. signature validation).
+
+  3. The body of the message (or viewable content area of non-body
+     message parts) which can be scrolled using the standard keys
+	found in popular pagination programs like `more` and `less`.
+	The vi-style `hjkl` and arrow keys also work as expected.
+
+You can use the `tab` key to move between the body and two menus.  If
+a message contains only one part, then the `tab` key moves only between
+the body section and the view menu.
+
+#### Features
+
+The interface allows you to zoom into and out of messages if your terminal
+width is too small to accurately display the message content.
+
+You can add your own view menu options by putting entries into your
+*.mh_profile* file.  This allows you to have easy access to multiple
+ways of viewing a content type, since different files of the same
+type are best served by different programs sometimes.
+
+
 html2msg
 --------
 

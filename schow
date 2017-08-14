@@ -204,7 +204,9 @@ sub mark {
 	return($MSG);
 }
 
-=head2 Message Headers
+=head2 Features
+
+=head3 Message Headers
 
 The top of the screen holds the header information from the message.
 The format of this content is stored in the users F<Mail> directory,
@@ -277,7 +279,7 @@ sub headers {
 	}
 }
 
-=head2 Multipart Messages
+=head3 Multipart Messages
 
 One of the most important advancements of B<schow> over the standard
 C<show> or enhanced C<mhshow> commands is with respect to the treatment
@@ -419,7 +421,7 @@ sub source {
 	close($raw);
 }
 
-=head2 About Parts
+=head3 About Parts
 
 An additional feature of B<schow> is that, for each message part,
 you can display the known information about that part.  This information
@@ -448,7 +450,7 @@ sub info {
 	#$BODY->focus();
 }
 
-=head2 Saving Message Parts
+=head3 Saving Message Parts
 
 B<schow> comes with a built-in, familiar looking save file dialog
 to help you save messages.  Directory navigation is part of the
@@ -472,7 +474,7 @@ sub save {
 	$BODY->focus();
 }
 
-=head2 Opening Message Parts
+=head3 Opening Message Parts
 
 B<schow> replaces C<mhshow> when it comes to the interactive display of
 messages, but there is no reason for it to re-invent the wheel.  When
@@ -515,7 +517,7 @@ sub open {
 	$BODY->focus();
 }
 
-=head2 text/plain Alternative Viewing in an Editor
+=head3 text/plain Alternative Viewing in an Editor
 
 In addition to the default screen presentation of C<text/plain> message
 parts, your favorite editor may also be invoked.  The editor is invoked
@@ -548,7 +550,7 @@ sub editor {
 	$BODY->focus();
 }
 
-=head2 Message Text
+=head3 Message Text
 
 Any message parts which are of content type text and don't appear
 to be attachments will be displayed in the standard message body
@@ -611,7 +613,7 @@ sub show {
 	#$BODY->focus();
 }
 
-=head2 User Defined/Auxillary Actions
+=head3 User Defined/Auxillary Actions
 
 B<schow> provides an interface to augment the standard message part
 view menu with user defined actions.  With the standard C<mhshow>
@@ -846,7 +848,7 @@ sub view {
 	return([@views]);
 }
 
-=head2 View Actions
+=head3 View Actions
 
 When performing a view action which does not have a standard text
 representation, B<schow> will execute the requested action and then
@@ -904,6 +906,18 @@ sub action {
 	$MENU_VIEW->draw();
 }
 
+=head3 Zooming
+
+The size of the viewable screen is the width and height of the terminal.
+Text is wrapped at this width, and the screen can be scrolled down to view
+the entire portion of content.  I, however, you need to make the display
+area wider and pan around the content to read it, B<schow> supports a zoom
+feature which will increase the line width by 20 characters at a time.  This
+is sometimes very useful for text/html conversions which have the content
+stored in tables.
+
+=cut
+
 sub zoom {
 	my($delta)=@_;
 	my($part)=$MENU_PART->get();
@@ -922,6 +936,14 @@ sub zoom {
 
 	&show($part);
 }
+
+=head2 Interface
+
+=head3 Layout
+
+The B<schow> window
+
+=cut
 
 sub window {
 	$HEAD=$WIN->add('head', 'TextViewer',
