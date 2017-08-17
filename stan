@@ -122,8 +122,7 @@ my($FORMAT)=join($RS,
 		'%<{in-reply-to}r%>'.
 		'%<{content-type}%<(match multipart/signed)s%>%>'.
 		'%<{content-type}%<(match multipart/encrypted)e%>%>'.
-		'%<{content-type}%<(match multipart/mixed)a%>%>'.
-		'%<{content-type}%<(match multipart/related)a%>%>',
+		'%<{content-type}%<(match multipart/mixed)a%>%>',
 	'%(clock{date})',
 	'%<(mymbox{from})%<{to}To:%14(decode(friendly{to}))%>%>'.
 		'%<(zero)%17(decode(friendly{from}))%>',

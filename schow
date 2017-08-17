@@ -8,6 +8,7 @@ schow - Curses multi-area MH show
 
 my($VERSION)='0.8';
 
+use open qw(:locale);
 use Getopt::Long;
 use Pod::Usage;
 use IO::Handle;
@@ -171,7 +172,7 @@ my($CUI)=Curses::UI->new(
 	);
 my($WIN)=$CUI->add('schow', 'Window');
 
-my($HEAD, $MENU, $BAR, $MENU_PART, $MENU_VIEW, $BODY);
+my($HEAD, $MENU, $BAR, $MENU_PART, $MENU_VIEW, $STATUS, $BODY);
 
 my($WIDTH)=$Curses::COLS;
 my($HEADERS)=0;
@@ -237,7 +238,7 @@ Date:formatfield="%<(nodate{text})%{text}%|%(pretty{text})%>"
 To:decode
 cc:decode
 From:decode
-Subject:decode,formatfield="%<{text}%{text}%|<no subject>%>"
+Subject:formatfield="%<{text}%(decode{text})%|<no subject>%>"
 EOT
 
 sub headers {
@@ -248,6 +249,8 @@ sub headers {
 	my(@head)=();
 	local($Text::Tabs::tabstop)=8;
 	local($_);
+
+	$HEADERS=0;
 
 	unless(-r $formfile) {
 		open($form, '>', $formfile);
@@ -313,6 +316,9 @@ sub parts {
 	my($list)=IO::Handle->new;
 	my($partw)=0;
 	local($_);
+
+	@PARTS=();
+	%CACHE=();
 
 	open($list, '-|', @mhlist);
 	while(<$list>) {
@@ -587,7 +593,7 @@ sub show {
 			chomp;
 			$line++;
 
-			if($line==1 && m|^part\s+\d+\s+\w+/.*\d+\w*$|) {
+			if($line==1 && m|^part\s+[\d.]*\s+\w+/.*\d+\w*$|) {
 				next;
 			}
 
@@ -597,7 +603,7 @@ sub show {
 					s/\s$//;
 				}
 			}
-			push(@text, @{$CUI->text_wrap(expand($_), $WIDTH+1)});
+			push(@text, &email_wrap($_));
 		}
 		close($body);
 
@@ -613,6 +619,52 @@ sub show {
 	#$BODY->focus();
 }
 
+=pod
+
+B<schow> uses its own line wrapping algorithm.  It is common for email
+to contain long strings (e.g. URLs) which are wider than the screen.  It
+tries to make the best decisions when this occurs.
+
+=cut
+
+sub email_wrap {
+	my(@text)=();
+	my($ll, $lw);
+	local($_);
+
+	foreach(@_) {
+		foreach my $word (split(m/(?<=\s)/)) {
+			$word=~s/\t/        /;
+
+			unless(@text) {
+				push(@text, $word);
+				next;
+			}
+
+			$ll=length($text[-1]);
+			$lw=length($word);
+
+			if($lw < $WIDTH) {
+				if($ll+$lw <= $WIDTH) {
+					$text[-1].=$word;
+				} else {
+					$text[-1]=~s/\s+$//;
+					push(@text, $word);
+				}
+			} else {
+				$text[-1].=substr($word, 0, $WIDTH-$ll, '');
+				$text[-1]=~s/\s+$//;
+
+				while($word) {
+					push(@text, substr($word, 0, $WIDTH, ''));
+				}
+			}
+		}
+	}
+
+	return(@text);
+}
+
 =head3 User Defined/Auxillary Actions
 
 B<schow> provides an interface to augment the standard message part
@@ -626,8 +678,15 @@ user can pick the different methods until the best one is found.
 This interface works very similar to the C<mhshow-show-type> interface.
 If your F<.mh_profile> had the following lines defined:
 
-  schow-pdf2txt-application/pdf: pdftotext -layout -nopgbrk '%f' -     
-  schow-pdfinfo-application/pdf: pdfinfo '%f'
+  schow-pdf2txt-application/pdf: pdftotext -layout -nopgbrk %f -     
+  schow-pdfinfo-application/pdf: pdfinfo %f
+
+Other choices may be to list out archive file contents with your
+preferred programs:
+
+  schow-list-application/zip: unzip -t %f
+  schow-list-application/x-tar: tar tvf %f
+  schow-list-application/x-compressed-tar: tar tvf %f
 
 Then, for messages with content type C<application> and subtype
 C<pdf>, two additional view menu items will be available in addition
@@ -791,14 +850,22 @@ ones of C<show>, C<about>, C<open>, C<save>, or C<editor>.  If you
 do, they will be renamed to be suffixed by the number 2.  The built-in
 methods are treaded specially, and cannot be overridden.
 
+Also, please be advised that C<mhlist> only reports on the first 24
+characters of a MIME type, and so that is all B<schow> has to go on.
+There are no known applications where this poses an issue such that
+two MIME types should be associated with different software.
+
 =cut
 
-foreach my $view (grep(m/^schow-(show|about|open|save|editor)-/, keys(%MH))) {
-	my($new)=$view;
+foreach my $schow (grep(m|^schow-\w+-[\w./-]+$|, keys(%MH))) {
+	my($view, $type)=($schow=~m/^schow-(\w+)-(.*)$/);
 
-	$new=~s/^schow-(show|about|open|save|editor)-/schow-${1}2-/;
-	$MH{$new}=$MH{$view};
-	delete($MH{$view});
+	if($view=~m/^(show|about|open|save|editor)$/) {
+		$MH{join('-', 'schow', $view.'2', $type)}=$MH{$schow};
+		delete($MH{$schow});
+	} elsif(length($type)>24) {
+		$MH{join('-', 'schow', $view, substr($type, 0, 24))}=$MH{$schow};
+	}
 }
 
 =pod
@@ -941,11 +1008,35 @@ sub zoom {
 
 =head3 Layout
 
-The B<schow> window
+The B<schow> window has three areas which move progressively down the screen.
+The placement and order of the windows non-configurable.
+
+The top area is reserved for the mail header.  Its height is, by default,
+equal to that of the number of headers displayed.  Each header takes up only
+one line, and is scrolled past the end of the screen.  The header section
+uses a file in your F<Mail> directory called F<schow.headers>.  You can
+change the headers you would like to see by editing this file.  The default
+file contains I<Date>, I<From>, I<To>, I<Cc> (if present), and I<Subject>.
+
+The middle area is a single line menu/status bar.  It will contain a
+drop-down list for the different available message parts, and one for
+a menu of ways to view that content.  The current message number will be
+printed to the far right, and just to its left will be any additional
+information about the message available to B<schow>.
+
+The bottom section is the largest (unless your screen is really short) and
+contains the body of the message text.  This is a scrollable area which
+moves up, down, left, and right if necessary.  The body supports the
+standard key strokes to move around, and supports a search interface.
+When scrolling in the body, the header and menu will remain immobile.
 
 =cut
 
 sub window {
+	$WIN->delete('head');
+	$WIN->delete('menu');
+	$WIN->delete('body');
+
 	$HEAD=$WIN->add('head', 'TextViewer',
 		-height       => $HEADERS,
 		-focusable    => 0,
@@ -963,6 +1054,20 @@ sub window {
 	);
 }
 
+=head3 Menus
+
+The first (leftmost) drop-down menu is for the message parts.  This
+menu is not focusable/usable if the message contains only one
+message part.  It does not contain any multipart MIME parts/containers.
+Only display capable message parts will be listed in the menu.
+
+The second (right) drop-down lists the view options for the current
+message part.  This is a context menu, and changes based on the
+message part.  When switching from one message part to another,
+the context resets to the default.
+
+=cut
+
 sub menu {
 	my($selected)=ref($MENU_PART)?($MENU_PART->get()):0;
 	my($indexes)=[];
@@ -979,13 +1084,13 @@ sub menu {
 	$views=&view($PARTS[$part]{'type'});
 
 	$BAR=$MENU->add('bar', 'Label',
-		-textalignment => 'right',
 		-width         => $Curses::COLS,
+		-textalignment => 'right',
 		-reverse       => $ARG{'inversebar'},
 		-underline     => !$ARG{'inversebar'},
 		-bold          => $ARG{'boldbar'},
 		-paddingspaces => 1,
-		-text          => $MSG.' ',
+		-text		=> $MSG.' ',
 	);
 
 	$MENU_PART=$MENU->add('part', 'Popupmenu',
@@ -1009,9 +1114,197 @@ sub menu {
 		-sbborder     => 0,
 		-nobeep       => $ARG{'nobeep'},
 	);
+	$STATUS=$MENU->add('status', 'Label',
+		-x             => $MENU_PART->width()+$MENU_VIEW->width()+4,
+		-width         => $Curses::COLS
+						-length($BAR->get())
+						-$MENU_PART->width()
+						-$MENU_VIEW->width()
+						-5,
+		-textalignment => 'right',
+		-paddingspaces => 1,
+		-reverse       => $ARG{'inversebar'},
+		-underline     => !$ARG{'inversebar'},
+		-bold          => $ARG{'boldbar'},
+	);
 
-	$MENU->set_draworder('bar', 'part', 'view');
+	$MENU->set_draworder('bar', 'part', 'view', 'status');
 }
+
+=head3 Status
+
+To the right of drop-down menus is the status bar section of the
+menu/status bar.  Normally, this only contains the message number.
+However, if there is other important information B<schow> needs to
+relay to the viewer, it will be placed here.
+
+If the message is really, really important, then it will blink.
+
+=cut
+
+sub status {
+	$STATUS->text(join(' ', @_));
+	$STATUS->blink(0);
+}
+
+sub alert {
+	$STATUS->text(join(' ', @_));
+	$STATUS->blink(1);
+}
+
+=head3 Key Bindings
+
+The key bindings for moving around are designed to be as compatible
+as possible with the L<more(1)> and L<less(1)> programs which are
+most often used to paginate message by MH users.
+
+=over 8
+
+=item >, ALT+RIGHT-ARROW
+
+The greater than symbol or ALT + the right arrow key will scroll the
+header section of the screen to the right 2 characters (if there is
+anything to scroll for).  The header section is not capable of
+accepting focus, and this is the only way to see more content (if 
+there is any).
+
+=item <, ALT+LEFT-ARROW
+
+The less than symbol or ALT + the left arrow key will scroll the
+header section of the screen to the left 2 characters (if there is
+anything to scroll for).  The header section is not capable of
+accepting focus, and this is the only way to return to the header
+keys.
+
+=item h, LEFT-ARROW, BACKSPACE
+
+Scroll the screen to the left by one character.
+
+=item l, RIGHT-ARROW
+
+Scroll the screen to the right by one character.
+
+=item k, UP-ARROW, p, P, CTRL+P, y, Y, CTRL+K
+
+Scroll the body window up one line.
+
+=item b, B, w, W
+
+Scroll the body window up one page.
+
+=item u, U, CTRL+U
+
+Scroll the body window up 11 lines, which is the quivalent of about a half
+page on many setups.
+
+=item j, DOWN-ARROW, s, S, e, E, ENTER
+
+Scroll the body window down 1 line.
+
+=item f, F, CTRL+F, z, Z
+
+Scroll the body window down by a page.
+
+=item d, D, CTRL+D
+
+Scroll the body window down 11 lines, which is the quivalent of about a half
+page on many setups.
+
+=item mouse wheel
+
+If your terminal supports mouse events, then the scroll wheel will scroll
+the screen up and down as you roll the wheel forward and backward,
+repectively.
+
+=item g, HOME
+
+Scroll to the first page of the message.
+
+=item G, END
+
+Scroll to the last page of the message.
+
+=item TAB
+
+Cycle through the window focus items to the next item.  The three items are
+(in this order):
+
+=over 8
+
+=item 1 Body window
+
+=item 2 Message part
+
+=item 3 View/context drop-down
+ 
+=back
+
+If the message is not a MIME message, or contains only one message part,
+the the 2nd item "Message part" is skipped.
+
+=item SHIFT+TAB
+
+Cycle backwards through the window focus items.  This moves in a backwards
+fashion (1, 3, 2, 1, ...) from C<TAB> but is otherwise the same.
+
+=item a, A
+
+Warp focus to the message part drop-down menu.  Think C<a> for attachments.
+
+=item v, V
+
+Warp focus to the view/context drop-down menu.
+
+=item LEFT-ARROW, RIGHT-ARROW (Menu focus only)
+
+When either of the menus are in focus, the left and right arrow keys no longer
+affect the body, and instead switch between the two.  Since there are only
+two items, left and right always cycle to the other one.
+
+=item UP-ARROW, DOWN-ARROW (Menu focus only)
+
+These keys perform slightly differently on the menu bar.  When used on
+the message part menu, the drop-down will not open, but the body will
+switch to the next (or previous) message part based on the arrow.
+However, when used on the view/context menu, the menu drop-down will
+open, and you can then select the correct view.
+
+=item +, =
+
+Zoom in on the screen by increasing the width available for email rendering
+by 20 characters.  If your screen width is 80 characters, this will give you
+a 100 character virtual screen.  Each time you zoom, you will increase the
+virtual width by 20 characters.  This is useful sometimes when rendering
+email, especially email converted from HTML using tables.
+
+=item -, _
+
+Zoom out on the screen, decreasing the width available for email rendring
+by 20 characters.  This function is the inverse of the previous zoom in.
+
+=item ESCAPE
+
+Warp focus to the body window.
+
+=item n, N
+
+Move to the next message scheduled to be viewed.  If there are no
+more messages to be viewed, exit.  This key binding is useful when
+you request to show multiple message, either directly or through
+the use of a sequence.
+
+=item q, Q, x, X, CTRL+C
+
+Exit B<schow>.  If there are other message left to be viewed,
+exit anyway.
+
+=item r, R, CTRL+R, CTRL+L
+
+Redraw the screen.
+
+=back
+
+=cut
 
 sub bindings {
 	sub BINDc(&$@) { $_[1]->set_binding($_[0], @_[2 .. $#_]) }
@@ -1036,15 +1329,16 @@ sub bindings {
 	BINDc { &hsend((KEY_DOWN())) }     $WIN=>( "\e258-1" );
 
 	#Editor motions:
-	BINDs 'cursor-up',                 $BODY=>( 'p', 'P', 'y', 'Y', "\K" );
+	BINDs 'cursor-left',               $BODY=>( KEY_BACKSPACE() );
+	BINDs 'cursor-up',                 $BODY=>( 'p', 'P', 'y', 'Y', "\cK" );
 	BINDs 'cursor-pageup',             $BODY=>( 'b', 'B', 'w', 'W' );
 	BINDc { &bsend((KEY_UP())x11) }    $BODY=>( 'u', 'U', "\cU" );
-	BINDc { &bsend((KEY_PPAGE())x20) } $BODY=>( 'g' );
+	BINDs 'cursor-home',               $BODY=>( 'g' );
 
-	BINDs 'cursor-down',               $BODY=>( 'n', 'N', 's', 'S', 'e', 'E' );
-	BINDs 'cursor-pagedown',           $BODY=>( 'f', "\cF", 'z', 'Z' );
+	BINDs 'cursor-down',               $BODY=>( 's', 'S', 'e', 'E', KEY_ENTER() );
+	BINDs 'cursor-pagedown',           $BODY=>( 'f', 'F', "\cF", 'z', 'Z' );
 	BINDc { &bsend((KEY_DOWN())x11) }  $BODY=>( 'd', 'D', "\cD" );
-	BINDc { &bsend((KEY_NPAGE())x20) } $BODY=>( KEY_END(), 'G' );
+	BINDs 'cursor-end',                $BODY=>( "\e[8~", 'G' );
 
 	$BODY->set_mouse_binding( sub { &bsend(KEY_UP()) }, 65536);
 	$BODY->set_mouse_binding( sub { &bsend(KEY_DOWN()) }, 2097152);
@@ -1080,14 +1374,22 @@ sub bindings {
 
 	#Global Keys
 	BINDc { $BODY->focus() }            $CUI=>( "\e" );
-	BINDc { $CUI->mainloopExit }        $CUI=>( 'q', 'Q', 'x', 'X', "\cC" );
+	BINDc { $CUI->mainloopExit }        $CUI=>( 'n', 'N', "\cN" );
+	BINDc { exit($CUI->mainloopExit) }  $CUI=>( 'q', 'Q', 'x', 'X', "\cC" );
 	BINDc { $CUI->{-canvasscr}->redrawwin() }
 	                                    $CUI=>( 'r', 'R', "\cR", "\cL" );
 }
 
-sub status {
-	$BAR->text(join(' ', @_, '', $MSG, ''));
-}
+=head2 Displaying Messages
+
+Unlike C<show> and C<mhshow>, B<schow> does not concatenate messages
+if multiple are requested.  Instead, it provides an interface to
+view them in succession.  The first message will be displayed
+independently.  If the user enters either the C<n>, C<N>, or C<CTRL+N>
+keys, the display window will close and a new one will open for the
+next message.
+
+=cut
 
 sub display {
 	my($msg)=@_;
@@ -1109,6 +1411,15 @@ sub display {
 	return;
 }
 
+=pod
+
+If the message request is for a sequence, the sequence will be
+expanded and each message will be displayed as described above.
+In all cases, the last message actually displayed will be the
+message which is stored in the C<cur> sequence.
+
+=cut
+
 sub messages {
 	my(@msgs)=();
 
@@ -1123,14 +1434,25 @@ sub messages {
 	}
 }
 
+=pod
+
+And, of course, if no message is specified, then the C<cur> sequence
+will be used.
+
+=cut
+
 if(@ARGV) {
 	&messages(@ARGV);
 } else {
 	&messages('cur');
 }
 
-$CUI->leave_curses();
-print "\n";
+END {
+	if(defined($CUI)) {
+		$CUI->leave_curses();
+		print "\n";
+	}
+}
 
 =head1 NOTES
 
