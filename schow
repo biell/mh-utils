@@ -573,6 +573,7 @@ sub show {
 	my(@show)=($MH{'showmimeproc'}, '-textonly', '-inlineonly',
 		'-form', 'mhl.body', '-markform', '/dev/null');
 	my($body)=IO::Handle->new;
+	my($type, $subtype)=split(m(/), $PARTS[$part]{'type'});
 	my(@text)=();
 	my(@parts)=();
 	my($line)=0;
@@ -603,7 +604,11 @@ sub show {
 					s/\s$//;
 				}
 			}
-			push(@text, &email_wrap($_));
+			if($type eq 'application') {
+				push(@text, $_);
+			} else {
+				push(@text, &email_wrap($_));
+			}
 		}
 		close($body);
 
@@ -697,6 +702,17 @@ ASCII text representation and display it in the standard body viewer.
 The second one will display helpful information about the PDF, like
 resolution and paper type to the standard body viewer window.  Whatever
 the string is in the middle section, that will be the menu label.
+
+Just like with C<mhshow>, first an attempt will be made to match
+against the C<type/subtype>.  If that fails, then a match aginst
+just C<type> is attempted.  It is probably best to avoid reusing
+the same menu name to avoid confustion.  The following lines
+will function in a deterministic fashion, but are not recommended
+for people due to possible user confusion about which command will
+be run when the item is selected.
+
+  schow-display-image: xv '%f'
+  schow-display-image/x-xcf: gimp '%f'
 
 The C<%> sequences are the same as C<mhshow> and are as follows:
 
@@ -855,6 +871,12 @@ characters of a MIME type, and so that is all B<schow> has to go on.
 There are no known applications where this poses an issue such that
 two MIME types should be associated with different software.
 
+B<schow> will taylor the menu of default actions based on the
+message part content type, and it may seem like a good idea to
+provide a standard function when one is missing, but that is simply
+not possible.  The number C<2> will always be appended to ensure
+the special processing of built-ins is not accidentally attempted.
+
 =cut
 
 foreach my $schow (grep(m|^schow-\w+-[\w./-]+$|, keys(%MH))) {
@@ -870,22 +892,9 @@ foreach my $schow (grep(m|^schow-\w+-[\w./-]+$|, keys(%MH))) {
 
 =pod
 
-B<schow> will taylor the menu of default actions based on the
-message part content type, and it may seem like a good idea to
-provide a standard function when one is missing, but that is simply
-not possible.  The number C<2> will always be appended to ensure
-the special processing of built-ins is not accidentally attempted.
-
-Just like with C<mhshow>, first an attempt will be made to match
-against the C<type/subtype>.  If that fails, then a match aginst
-just C<type> is attempted.  It is probably best to avoid reusing
-the same menu name to avoid confustion.  The following lines
-will function in a deterministic fashion, but are not recommended
-for people due to possible user confusion about which command will
-be run when the item is selected.
-
-  schow-display-image: xv '%f'
-  schow-display-image/x-xcf: gimp '%f'
+When the view/context menu is constructed, the standard I<schow>
+rendering will come first, followed by any user defined actions,
+and then followed by the default choices.
 
 =cut
 
@@ -894,7 +903,15 @@ sub view {
 	my($type, $subtype)=split(m|/|);
 	my(%user)=();
 	my(@views)=();
-	my($text)='pgp-signature|x-c?sh|x-script|xml';
+	my($text)=join('|', qw(
+			pgp-signature
+			x-c?sh
+			x-script
+			sql
+			xml
+			.*\+xml
+			.*\+json
+		));
 
 	foreach my $method (grep(m(^schow-.*?-$type(/$subtype)?$), keys(%MH))) {
 		$user{$1}=1 if($method=~m(^schow-(.*?)-$type));
@@ -906,7 +923,7 @@ sub view {
 		@views=('show', sort(keys(%user)), 'about', 'open', 'editor', 'save');
 	} elsif(m(message/)) {
 		@views=('show', sort(keys(%user)), 'about', 'open', 'save');
-	} elsif(m(application/($text))) {
+	} elsif(m(application/($text))i) {
 		@views=('show', sort(keys(%user)), 'about', 'open', 'save');
 	} else {
 		@views=('about', sort(keys(%user)), 'open', 'save');
@@ -1176,7 +1193,7 @@ anything to scroll for).  The header section is not capable of
 accepting focus, and this is the only way to return to the header
 keys.
 
-=item h, LEFT-ARROW, BACKSPACE
+=item h, LEFT-ARROW, BACKSPACE, CTRL+B
 
 Scroll the screen to the left by one character.
 
@@ -1188,7 +1205,7 @@ Scroll the screen to the right by one character.
 
 Scroll the body window up one line.
 
-=item b, B, w, W
+=item b, B, w, W, PAGE-UP, [
 
 Scroll the body window up one page.
 
@@ -1197,11 +1214,11 @@ Scroll the body window up one page.
 Scroll the body window up 11 lines, which is the quivalent of about a half
 page on many setups.
 
-=item j, DOWN-ARROW, s, S, e, E, ENTER
+=item j, DOWN-ARROW, s, S, CTRL+N, e, E, ENTER
 
 Scroll the body window down 1 line.
 
-=item f, F, CTRL+F, z, Z
+=item f, F, CTRL+F, z, Z, SPACE, PAGE-DOWN, ]
 
 Scroll the body window down by a page.
 
@@ -1285,6 +1302,14 @@ by 20 characters.  This function is the inverse of the previous zoom in.
 =item ESCAPE
 
 Warp focus to the body window.
+
+=item /
+
+Initiate a forward search.
+
+=item ?
+
+Initiate a backward search.
 
 =item n, N
 
