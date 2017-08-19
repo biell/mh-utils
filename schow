@@ -1224,14 +1224,27 @@ Scroll the body window down by a page.
 
 =item d, D, CTRL+D
 
-Scroll the body window down 11 lines, which is the quivalent of about a half
-page on many setups.
+Scroll the body window down 11 lines, which is the quivalent of about a
+half page on many setups.
 
-=item mouse wheel
+=item mouse-wheel
 
 If your terminal supports mouse events, then the scroll wheel will scroll
 the screen up and down as you roll the wheel forward and backward,
 repectively.
+
+=item CTRL+mouse-wheel
+
+If your terminal supports mouse events, then turning the scroll wheel
+while holding down the Control key will have the effect of scrolling
+the body left and right.
+
+=item ALT+mouse-wheel
+
+If your terminal supports mouse events, then turning the  scroll wheel
+while holding down the Alt key will h ave the effect of scrolling the 
+header window right and left, similar to how ALT+RIGHT-ARROW or ">" moves
+the header window to the right.
 
 =item g, HOME
 
@@ -1332,6 +1345,13 @@ Redraw the screen.
 =cut
 
 sub bindings {
+	my($wheel_up)=BUTTON4_PRESSED;
+	my($wheel_down)=BUTTON4_PRESSED<<5;   #BUTTON5_PRESSED not defined!!
+	my($c_wheel_up)=BUTTON_CTRL|$wheel_up;
+	my($c_wheel_down)=BUTTON_CTRL|$wheel_down;
+	my($a_wheel_up)=BUTTON_ALT|$wheel_up;
+	my($a_wheel_down)=BUTTON_ALT|$wheel_down;
+
 	sub BINDc(&$@) { $_[1]->set_binding($_[0], @_[2 .. $#_]) }
 	sub BINDs($$@) { $_[1]->set_binding($_[0], @_[2 .. $#_]) }
 	sub hsend {
@@ -1365,8 +1385,19 @@ sub bindings {
 	BINDc { &bsend((KEY_DOWN())x11) }  $BODY=>( 'd', 'D', "\cD" );
 	BINDs 'cursor-end',                $BODY=>( "\e[8~", 'G' );
 
-	$BODY->set_mouse_binding( sub { &bsend(KEY_UP()) }, 65536);
-	$BODY->set_mouse_binding( sub { &bsend(KEY_DOWN()) }, 2097152);
+	if($Curses::UI::ncurses_mouse) {
+		#Down & Up are down and up
+		$BODY->set_mouse_binding( sub { &bsend(KEY_UP()) }, $wheel_up);
+		$BODY->set_mouse_binding( sub { &bsend(KEY_DOWN()) }, $wheel_down);
+
+		#CTRL+Down & CTRL+Up are right and left
+		$BODY->set_mouse_binding( sub { &bsend(KEY_LEFT()) }, $c_wheel_up);
+		$BODY->set_mouse_binding( sub { &bsend(KEY_RIGHT()) }, $c_wheel_down);
+
+		#ALT+Down & ALT+Up are header right and left
+		$BODY->set_mouse_binding( sub { &hsend(KEY_LEFT()) }, $a_wheel_up);
+		$BODY->set_mouse_binding( sub { &hsend(KEY_RIGHT()) }, $a_wheel_down);
+	}
 
 	#Cycle:
 	if(@PARTS>1) {

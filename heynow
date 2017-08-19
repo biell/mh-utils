@@ -691,40 +691,33 @@ to send your entire keyring.
 
 	'include' => sub {
 		my($mhshow, $mhlin, $mhlout, $draft)=map(IO::Handle->new, 1..4);
-		my($sysreply)='/etc/nmh/mhl.reply';
-		my($usrreply)=join('/', $MH{'path'}, 'mhl.reply');
+		my(@reply)=($MH{'showproc'});
+		my(@showmime)=($MH{'showmimeproc'}, '-file', $MH{'altmsg'});
 		my($arg)=();
 		my(@options)=qw(
 			format|f=s
 			full|F!
 			plain|p!
 		);
+		my($head)=0;
 		my($r, $l);
-		my($reply);
 
 		return unless($MH{'altmsg'}); #Not a repl
 
 		&get_options(\@_, \%arg, 'include', @options) || return;
 
 		if($arg{'format'}) {
-			$reply=$arg{'format'};
-		} elsif(-r $usrreply) {
-			$reply=$usrreply;
-		} elsif(-r $sysreply) {
-			$reply=$sysreply;
+			push(@reply, '-form', $arg{'format'});
 		} else {
-			print "Cannot file a valid mhl.reply file\n";
-			return;
+			push(@reply, '-form', 'mhl.reply');
 		}
 
 		if($arg{'full'}) {
-			open($mhlout, '-|', $MH{'showproc'},
-				'-form', $reply, $MH{'altmsg'});
+			open($mhlout, '-|', @reply, $MH{'altmsg'});
 			open($draft, '>>', $MH{'draft'});
 		} elsif($arg{'plain'}) {
-			open($mhshow, '-|', $MH{'showmimeproc'},
-				'-type', 'text/plain', '-file', $MH{'altmsg'});
-			open2($mhlout, $mhlin, $MH{'showproc'}, '-form', $reply);
+			open($mhshow, '-|', @showmime, '-type', 'text/plain');
+			open2($mhlout, $mhlin, @reply);
 			open($draft, '>>', $MH{'draft'});
 
 			print $mhlin ( <$mhshow> );
@@ -732,8 +725,8 @@ to send your entire keyring.
 			close($mhshow);
 			close($mhlin);
 		} else {
-			open($mhshow, '-|', $MH{'showmimeproc'}, '-file', $MH{'altmsg'});
-			open2($mhlout, $mhlin, $MH{'showproc'}, '-form', $reply);
+			open($mhshow, '-|', @showmime);
+			open2($mhlout, $mhlin, @reply);
 			open($draft, '>>', $MH{'draft'});
 
 			print $mhlin ( <$mhshow> );
