@@ -14,6 +14,7 @@ use Term::ReadKey;
 use Pod::Usage;
 
 my($SIZE)=0;
+my(%TAGS)=();
 
 =head1 SYNOPSIS
 
@@ -168,6 +169,10 @@ sub fix_html {
 		s/\swidth="?\d+[%\w]?"?//i;
 		s/\swidth:\s+"?\d+[%\w]?"?//i;
 
+		foreach $tag (m/<(\w+)/g) {
+			$TAGS{lc($tag)}++;
+		}
+
 		push(@buf, $_);
 	}
 	close($html);
@@ -177,12 +182,21 @@ sub fix_html {
 	close($html);
 }
 
+sub complex {
+	$SIZE > 8192		||
+	$TAGS{'table'}>1	||
+	$TAGS{'tr'}>5		||
+	$TAGS{'td'}>10		||
+	$TAGS{'li'}>100	||
+	$TAGS{'dt'}>10
+}
+
 foreach my $file (@ARGV) {
 	&fix_html($file);
 	$SIZE+=(-s $file);
 }
 
-if($SIZE > 3072) {
+if(&complex) {
 	&w3m(@ARGV);
 } else {
 	&markdown(@ARGV);

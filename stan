@@ -79,6 +79,8 @@ my(%ARG)=(
 	'date'	=> '%m/%d',
 );
 
+my($DUP)=0;
+
 unshift(@ARGV, shellwords(`mhparam stan`));
 
 Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
@@ -316,6 +318,11 @@ while(<$SCAN>) {
 	$id=~s/>.*?$//;
 	$reply=~s/^.*<//;
 	$reply=~s/>.*?$//;
+
+	if(exists($MAIL{$id})) {
+		$DUP++;
+		$id.="-$DUP";
+	}
 
 	$MAIL{$id}{'reply-to'}=$reply;
 	$MAIL{$id}{'refs'}=[reverse($refs=~m/<(.*?)>/g)];

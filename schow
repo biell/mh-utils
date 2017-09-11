@@ -19,6 +19,7 @@ use File::Basename;
 use File::Temp qw(tempfile);
 use Curses;
 use Curses::UI;
+use Data::Dumper;
 
 =head1 SYNOPSIS
 
@@ -30,6 +31,13 @@ All command-line options to B<schow> which are not listed below are
 passed unaltered and directly to L<show(1)>.
 
 =over 8
+
+=item -m or -mouse
+
+Enable the mouse scroll wheel.  You may find that this affects your
+ability to select text with your mouse for copy into the selection
+buffer.  Holding down shift can help with this, or don't enable
+the mouse.
 
 =item -c or -compat
 
@@ -89,6 +97,7 @@ Print the software license, then exit.
 =cut
 
 my(@OPTIONS)=qw(
+	mouse|mice|wheel|pointer|m
 	compat|simple|dumb|c
 	wrapheader|wrapheaders|wraphead|w
 	inversebar|i
@@ -103,6 +112,8 @@ my(@OPTIONS)=qw(
 	license|L
 );
 my(%ARG)=(
+	'mouse'       => 0,
+	'compat'      => 0,
 	'inversebar'  => 0,
 	'boldbar'     => 0,
 	'nobeep'      => 0,
@@ -165,8 +176,8 @@ ensuring access to the context of the message throughout review.
 =cut
 
 my($CUI)=Curses::UI->new(
-		-mouse_support  => 1,
 		-color_support  => 1,
+		-mouse_support  => $ARG{'mouse'},
 		-compat         => $ARG{'compat'},
 		-debug          => 0,
 	);
@@ -180,6 +191,8 @@ my($HEADERS)=0;
 my($MSG, $MSGFILE)=(undef, undef);
 my(@PARTS)=();
 my(%CACHE);
+
+my(@SEL)=();
 
 =pod
 
@@ -577,6 +590,7 @@ sub show {
 	my(@text)=();
 	my(@parts)=();
 	my($line)=0;
+	my($empty)=0;
 
 	unless($CACHE{$PARTS[$part]}{'show'}) {
 		if($part) {
@@ -591,8 +605,13 @@ sub show {
 
 		open($body, '-|', @show, @parts);
 		while(<$body>) {
-			chomp;
 			$line++;
+
+			if(m/^\s*$/) {
+				next if($empty++ > 1);
+			} else {
+				$empty=0;
+			}
 
 			if($line==1 && m|^part\s+[\d.]*\s+\w+/.*\d+\w*$|) {
 				next;
@@ -1067,7 +1086,7 @@ sub window {
 	$BODY=$WIN->add('body', 'TextViewer',
 		-y            => $HEADERS+1,
 		-showoverflow => 0,
-		-nobeep       => $ARG{'nobeep'},
+		-nobeep       => $ARG{'nobeep'}
 	);
 }
 
@@ -1200,6 +1219,18 @@ Scroll the screen to the left by one character.
 =item l, RIGHT-ARROW
 
 Scroll the screen to the right by one character.
+
+=item ^
+
+Warp the screen to the leftmost position, showing the beginning of message
+body lines.
+
+=item $
+
+Warp the screen to the rightmost position, showing the last characters
+on message body lines.  This is based on the width of the buffer, the
+lines you are currently viewing may not have lines that long and so it
+is possible for the screen to appear empty.
 
 =item k, UP-ARROW, p, P, CTRL+P, y, Y, CTRL+K
 
@@ -1367,6 +1398,16 @@ sub bindings {
 		$BODY->focus();
 	}
 
+	#TextEditor counts the newline in width AND things you need a +1
+	$BODY->set_routine('cursor-right', sub {
+		my($cur_hscroll)=$BODY->{-xscrpos};
+		my($max_hscroll)=$BODY->{-hscrolllen} - $BODY->canvaswidth - 2;
+
+		return $BODY->dobeep if($cur_hscroll >= $max_hscroll);
+
+		Curses::UI::TextEditor::cursor_right(@_);
+	});
+
 	#Slide Head:
 	BINDc { &hsend((KEY_RIGHT())x2) }  $WIN=>( '>', '.', "\e261-1" );
 	BINDc { &hsend((KEY_LEFT())x2) }   $WIN=>( '<', ',', "\e260-1" );
@@ -1374,6 +1415,8 @@ sub bindings {
 	BINDc { &hsend((KEY_DOWN())) }     $WIN=>( "\e258-1" );
 
 	#Editor motions:
+	BINDs 'cursor-scrlinestart',       $BODY=>( '^' );
+	BINDs 'cursor-scrlineend',         $BODY=>( '$' );
 	BINDs 'cursor-left',               $BODY=>( KEY_BACKSPACE() );
 	BINDs 'cursor-up',                 $BODY=>( 'p', 'P', 'y', 'Y', "\cK" );
 	BINDs 'cursor-pageup',             $BODY=>( 'b', 'B', 'w', 'W' );
@@ -1496,6 +1539,9 @@ And, of course, if no message is specified, then the C<cur> sequence
 will be used.
 
 =cut
+
+STDOUT->autoflush(1);
+STDERR->autoflush(1);
 
 if(@ARGV) {
 	&messages(@ARGV);
