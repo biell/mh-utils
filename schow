@@ -661,7 +661,9 @@ sub email_wrap {
 			$word=~s/\t/        /;
 
 			unless(@text) {
-				push(@text, $word);
+				while($word) {
+					push(@text, substr($word, 0, $WIDTH, ''));
+				}
 				next;
 			}
 
