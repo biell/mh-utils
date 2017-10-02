@@ -1,0 +1,178 @@
+#!/usr/bin/perl
+
+=head1 NAME
+
+linklister - Display document links
+
+=cut
+
+my($VERSION)='1.0';
+
+use open qw(:locale);
+use Getopt::Long;
+use Pod::Usage;
+use Text::ParseWords;
+use Text::Wrap;
+use Term::ReadKey;
+
+=head1 SYNOPSIS
+
+linklister [-vhHL] <file>
+
+=head2 Options
+
+=over 8
+
+=item -v or -version
+
+Print version and exit
+
+=item -h or -? or -help
+
+print this short help, then exit.
+
+=item -H or -manual
+
+Print the full manual, then exit.
+
+=item -L or -license
+
+Print the software license, then exit.
+
+=back
+
+=cut
+
+my(@OPTIONS)=qw(
+	version|v
+	help|h
+	manual|H
+	license|L
+);
+my(%ARG)=();
+
+my($DUP)=0;
+
+my($COLS, $ROWS, $WIDTH, $HEIGHT)=GetTerminalSize(*STDOUT);
+
+$Text::Wrap::columns=$COLS+1;
+
+unshift(@ARGV, shellwords(`mhparam linklister`));
+
+Getopt::Long::Configure('pass_through', 'bundling_override', 'ignore_case');
+unless(GetOptions(\%ARG, @OPTIONS)) {
+     pod2usage(-verbose => 1, -exitval => 1);
+} 
+
+if($ARG{'version'}) {
+	print basename($0), ' ', $VERSION, "\n";
+	exit(0);
+} elsif($ARG{'help'}) {
+	pod2usage(-verbose => 1, -exitval => 0);
+} elsif($ARG{'manual'}) {
+	pod2usage(-verbose => 2, -exitval => 0);
+} elsif($ARG{'license'}) {
+	pod2usage(-verbose => 99, -exitval => 0,
+		-sections => ['LICENSE', 'COPYRIGHT']);
+}
+
+=head1 DESCRIPTION
+
+B<linklister> reads a document, presumably an email when used in conjunction
+with C<schow>, and displays only the links found within the document.
+
+B<linklister> is designed for use with C<schow> by entering the following line
+into your F<.mh_profile>:
+
+  schow-links-text/html: linklister %f
+
+=cut
+
+my(%LINKS)=();
+
+$/=undef;
+
+#Silence encoding errors
+close STDERR; 
+
+while(<>) {
+	s/<SCRIPT\s.*<\/SCRIPT>//gsi;
+	s/<STYLE\s.*<\/STYLE>//gsi;
+
+	s/<\/?(\!DOCTYPE|HTML|TABLE|TR|TD|TH|THEAD|TBODY|SPAN|DIV|FONT).*?>//gsi;
+
+	s/<IMG [^>]*ALT="?[^">]*?.*?>/$1/gsi;
+
+	s/<IMG [^>]*SRC="?[^">\s]*?\/([^">\s]*).*?>/$1/gsi;
+
+	s/<\/?(EM|I)>/*/gi;
+	s/<\/?(STRONG|B)>/**/gi;
+
+	while(s/<A .*?HREF="?([^">\s]*).*?>\s*([^<]*?)\s*<\/A>//si) {
+		$LINKS{$1}=$2;
+	}
+
+	while(s/\[(.*?)\]\((.*?)\)//si) {
+		$LINKS{$2}=$1;
+	}
+
+	s/(HREF|SRC)="?[^">\s]*?"?//sgi;
+
+	while(s/(https?:\/\/.*)\s//si) {
+		$LINKS{$1}=$1;
+	}
+}
+
+foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
+	if($url && $LINKS{$url} && $url ne $LINKS{$url}) {
+		print "\n[", $LINKS{$url}, "]\n", wrap('', '', $url), "\n\n";
+		delete($LINKS{$url});
+	}
+}
+
+foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
+	print "\n", wrap('', '', $url), "\n\n";
+}
+
+=head1 AUTHOR
+
+William Totten
+
+=head1 LICENSE
+
+BSD 3-Clause License
+
+=head1 COPYRIGHT
+
+  Copyright (c) 2017, William Totten
+  All rights reserved.
+  
+  Redistribution and use in source and binary forms, with or without
+  modification, are permitted provided that the following conditions
+  are met:
+  
+  * Redistributions of source code must retain the above copyright
+    notice, this list of conditions and the following disclaimer.
+  
+  * Redistributions in binary form must reproduce the above copyright
+    notice, this list of conditions and the following disclaimer in the
+    documentation and/or other materials provided with the distribution.
+  
+  * Neither the name of the copyright holder nor the names of its
+    contributors may be used to endorse or promote products derived from
+    this software without specific prior written permission.
+  
+  THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+  "AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+  LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A
+  PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+  HOLDER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+  SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+  LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+  DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+  THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+  (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+  OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+=cut
+
