@@ -88,6 +88,17 @@ into your F<.mh_profile>:
 
 =cut
 
+sub text {
+	local($_)=@_;
+
+	s/&quot;/"/g;
+	s/&lt;/</g;
+	s/&gt;/>/g;
+	s/&amp;/&/g;
+
+	return($_);
+}
+
 my(%LINKS)=();
 
 $/=undef;
@@ -95,13 +106,24 @@ $/=undef;
 #Silence encoding errors
 close STDERR; 
 
+=pod
+
+Please note that B<linklister> is a scraper, not an interpreter.  It scrapes
+the content out of the message using regular expressions instead using
+the HTML structure of most messages.  This allows B<linklister> to support
+non-markup links and other link formats, such as markdown and wiki.
+
+=cut
+
 while(<>) {
 	s/<SCRIPT\s.*<\/SCRIPT>//gsi;
 	s/<STYLE\s.*<\/STYLE>//gsi;
 
 	s/<\/?(\!DOCTYPE|HTML|TABLE|TR|TD|TH|THEAD|TBODY|SPAN|DIV|FONT).*?>//gsi;
 
-	s/<IMG [^>]*ALT="?[^">]*?.*?>/$1/gsi;
+	s/<IMG [^>]*ALT="?([^">]*).*?>/$1/gsi;
+
+	s/<IMG [^>]*ID="?([^">]*).*?>/$1/gsi;
 
 	s/<IMG [^>]*SRC="?[^">\s]*?\/([^">\s]*).*?>/$1/gsi;
 
@@ -109,16 +131,20 @@ while(<>) {
 	s/<\/?(STRONG|B)>/**/gi;
 
 	while(s/<A .*?HREF="?([^">\s]*).*?>\s*([^<]*?)\s*<\/A>//si) {
-		$LINKS{$1}=$2;
+		$LINKS{$1}=&text($2);
 	}
 
 	while(s/\[(.*?)\]\((.*?)\)//si) {
-		$LINKS{$2}=$1;
+		$LINKS{$2}=&text($1);
+	}
+
+	while(s/\[\[(.*?)\|(.*?)\]\]//si) {
+		$LINKS{$1}=&text($2);
 	}
 
 	s/(HREF|SRC)="?[^">\s]*?"?//sgi;
 
-	while(s/(https?:\/\/.*)\s//si) {
+	while(s/(https?:\/\/[^<>)\s]*)//si) {
 		$LINKS{$1}=$1;
 	}
 }
