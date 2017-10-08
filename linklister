@@ -14,6 +14,7 @@ use Pod::Usage;
 use Text::ParseWords;
 use Text::Wrap;
 use Term::ReadKey;
+use File::Basename;
 
 =head1 SYNOPSIS
 
@@ -51,8 +52,6 @@ my(@OPTIONS)=qw(
 );
 my(%ARG)=();
 
-my($DUP)=0;
-
 my($COLS, $ROWS, $WIDTH, $HEIGHT)=GetTerminalSize(*STDOUT);
 
 $Text::Wrap::columns=$COLS+1;
@@ -84,6 +83,11 @@ with C<schow>, and displays only the links found within the document.
 B<linklister> is designed for use with C<schow> by entering the following line
 into your F<.mh_profile>:
 
+  schow-links-text: linklister %f
+
+If you would prefer to only have a menu option for text/html messages, you
+can use:
+
   schow-links-text/html: linklister %f
 
 =cut
@@ -99,6 +103,7 @@ sub text {
 	return($_);
 }
 
+my(%IMGS)=();
 my(%LINKS)=();
 
 $/=undef;
@@ -119,16 +124,36 @@ while(<>) {
 	s/<SCRIPT\s.*<\/SCRIPT>//gsi;
 	s/<STYLE\s.*<\/STYLE>//gsi;
 
-	s/<\/?(\!DOCTYPE|HTML|TABLE|TR|TD|TH|THEAD|TBODY|SPAN|DIV|FONT).*?>//gsi;
+	s/<\/?(EM|I)>/*/gsi;
+	s/<\/?(STRONG|B)>/**/gsi;
 
+	s/<(?!(A|\/A|IMG)\b).*?>//gsi;
+
+	s/\s+/ /gs;
+
+	#Images
+	while(m/<IMG [^>]*SRC="([^">\s]*)"[^>]*>/gsi) {
+		$IMGS{$1}=&text(basename($1));
+	}
+	while(m/<IMG [^>]*SRC="?([^">\s]*)[^>]*ID="?([^">]*)[^>]*>/gsi) {
+		$IMGS{$1}=&text($2);
+	}
+	while(m/<IMG [^>]*ID="?([^">]*?)[^>]*SRC="?([^">\s]*)[^>]*>/gsi) {
+		$IMGS{$2}=&text($1);
+	}
+	while(m/<IMG [^>]*SRC="?([^">\s]*)[^>]*ALT="?([^">]*)[^>]*>/gsi) {
+		$IMGS{$1}=&text($2);
+	}
+	while(m/<IMG [^>]*ALT="?([^">]*)[^>]*SRC="?([^">\s]*)[^>]*>/gsi) {
+		$IMGS{$2}=&text($1);
+	}
+
+	#Links
 	s/<IMG [^>]*ALT="?([^">]*).*?>/$1/gsi;
 
 	s/<IMG [^>]*ID="?([^">]*).*?>/$1/gsi;
 
 	s/<IMG [^>]*SRC="?[^">\s]*?\/([^">\s]*).*?>/$1/gsi;
-
-	s/<\/?(EM|I)>/*/gi;
-	s/<\/?(STRONG|B)>/**/gi;
 
 	while(s/<A .*?HREF="?([^">\s]*).*?>\s*([^<]*?)\s*<\/A>//si) {
 		$LINKS{$1}=&text($2);
@@ -149,6 +174,7 @@ while(<>) {
 	}
 }
 
+print "Links:\n------\n";
 foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
 	if($url && $LINKS{$url} && $url ne $LINKS{$url}) {
 		print "\n[", $LINKS{$url}, "]\n", wrap('', '', $url), "\n\n";
@@ -157,6 +183,17 @@ foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
 }
 
 foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
+	print "\n", wrap('', '', $url), "\n\n";
+}
+
+print "\nImages:\n-------\n";
+foreach my $url (sort { $IMGS{$a} cmp $IMGS{$b} } keys(%IMGS)) {
+	if($url && $IMGS{$url} && $url ne $IMGS{$url}) {
+		print "\n[", $IMGS{$url}, "]\n", wrap('', '', $url), "\n\n";
+		delete($IMGS{$url});
+	}
+}
+foreach my $url (sort { $IMGS{$a} cmp $IMGS{$b} } keys(%IMGS)) {
 	print "\n", wrap('', '', $url), "\n\n";
 }
 

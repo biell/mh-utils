@@ -154,6 +154,32 @@ is a format designed, in part, from the conventions of pre-HTML email, so
 it only makes sense that it is used turn text with markup into flat
 text.
 
+linklister
+----------
+
+The `linklister` program is a simple program which reads email in
+HTML, markdown, wiki, or text formats and looks for links to documents
+and images on the world wide web.  The only output of `linklister` are
+these links.
+
+This is a great tool for quickly scanning and finding link content in
+an email.  It's intended use is with the `schow` functionality to add
+context sensitive menu options for messages.  By adding the following
+line to your `.mh_profile`,  you can have a drop-down menu item to display
+links in an email for text/html messages:
+
+  schow-links-text/html: linklister %f
+
+To have this drop-down menu for all messages, you can simply put:
+
+  schow-links-text: linklister %f
+
+This tool pulls links from the messages by scraping them with regular
+expressions, and does not implement a full HTML parser.  This makes it
+fast and able to read multiple message formats; however, it also makes
+it imperfect and capable of missing links it doesn't understand how to
+parse.
+
 
 qp2ascii
 --------
