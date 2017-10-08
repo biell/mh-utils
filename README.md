@@ -168,11 +168,11 @@ context sensitive menu options for messages.  By adding the following
 line to your `.mh_profile`,  you can have a drop-down menu item to display
 links in an email for text/html messages:
 
-  schow-links-text/html: linklister %f
+    schow-links-text/html: linklister %f
 
 To have this drop-down menu for all messages, you can simply put:
 
-  schow-links-text: linklister %f
+    schow-links-text: linklister %f
 
 This tool pulls links from the messages by scraping them with regular
 expressions, and does not implement a full HTML parser.  This makes it
