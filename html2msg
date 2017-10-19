@@ -111,7 +111,10 @@ sub markdown {
 	$_=<$md>;
 	close($md);
 
-	s|\[(.*?)\]\{.*?\}|$1|sg;
+	s|([\)\]])\{.*?\}|$1|sg;
+
+	s|!?\[\]\(\)||g;
+	s|!?\[\]\((http.+?)\)|$1|sig;
 
 	s|&lt;<|<|ig;
 	s|>&gt;|>|ig;
@@ -120,7 +123,9 @@ sub markdown {
 	s|&gt;|>|ig;
 
 	s|</?div>\s*||ig;
-	s|</?div[>\s]+.*?>\s*||ig;
+	s|</?div[>\s]+.*?>\s*||sig;
+
+	s|{#gmail-.*?}||sig;
 
 	s|\\$||mg;
 	s|^[> ]+$||mg;
