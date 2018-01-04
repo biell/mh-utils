@@ -1369,10 +1369,15 @@ sub pandoc {
 		if(m/^#begin alternative/) {
 			push(@pre, @pd);
 			@pd=();
-		} elsif(m/^#<text\/html/) {
+		} elsif(m/^#<text\/plain/) {
 			last;
 		} elsif(m/^#end \(alternative\)/) {
 			last;
+		} elsif(m|^#@?\w+/\w|) { #force attachments outside markup
+			push(@post, $_);
+			while(m/\\$/) {
+				push(@post, $_=<$msg>);
+			}
 		} else {
 			push(@pd, $_);
 		}
@@ -1397,6 +1402,9 @@ sub pandoc {
 		if(m/^[> ]*-- $/) {
 			print $pd $opt->{'pre'}, "\n" if($opt->{'pre'});
 			$breaks=1;
+		} elsif(m|^#<text/|) {
+			$breaks=0;
+			last;
 		} elsif(m/^---+Original Message---+$/) {
 			$breaks=-1;
 		} elsif(m/^---+ Forwarded Message$/) {

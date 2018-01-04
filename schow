@@ -32,6 +32,13 @@ passed unaltered and directly to L<show(1)>.
 
 =over 8
 
+=item -e or -replyexit
+
+When replying to a message, calendar invite, or forwarding a message,
+exit when done.  The default behaviour is to bring you back to the message,
+but this flag will allow you to mark the completion of that event as
+a request to close B<schow>.
+
 =item -m or -mouse
 
 Enable the mouse scroll wheel.  You may find that this affects your
@@ -97,6 +104,7 @@ Print the software license, then exit.
 =cut
 
 my(@OPTIONS)=qw(
+	replyexit|e
 	mouse|mice|wheel|pointer|m
 	compat|simple|dumb|c
 	wrapheader|wrapheaders|wraphead|w
@@ -112,6 +120,7 @@ my(@OPTIONS)=qw(
 	license|L
 );
 my(%ARG)=(
+	'replyexit'   => 0,
 	'mouse'       => 0,
 	'compat'      => 0,
 	'inversebar'  => 0,
@@ -121,7 +130,7 @@ my(%ARG)=(
 
 my(@MH_SETTINGS)=qw(
 	editor pathproc showmimeproc lproc listmimeproc storemimeproc mhlproc
-	scanproc pickproc libdir schow current-folder
+	replproc forwproc icalproc scanproc pickproc libdir schow current-folder
 );
 my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
 	`mhparam -all; mhparam @MH_SETTINGS`);
@@ -134,6 +143,10 @@ $MH{'schow'}||='';
 $MH{'listmimeproc'}||='mhlist';
 $MH{'storemimeproc'}||='mhstore';
 $MH{'mhlproc'}||=join('/', $MH{'libdir'}, 'mhl');
+$MH{'compproc'}||='comp';
+$MH{'replproc'}||='repl';
+$MH{'forwproc'}||='forw';
+$MH{'icalproc'}||='mhical';
 $MH{'scanproc'}||='scan';
 $MH{'pickproc'}||='pick';
 $MH{'editor'}||=$ENV{'EDITOR'} || $ENV{'VISUAL'} || 'vi';
@@ -176,6 +189,7 @@ ensuring access to the context of the message throughout review.
 =cut
 
 my($CUI)=Curses::UI->new(
+		-utf8           => 1,
 		-color_support  => 1,
 		-mouse_support  => $ARG{'mouse'},
 		-compat         => $ARG{'compat'},
@@ -258,7 +272,7 @@ sub headers {
 	my(@show)=($MH{'mhlproc'}, '-nobell', '-noclear', $MSGFILE);
 	my($header, $form)=(IO::Handle->new, IO::Handle->new);
 	my($formfile)=join('/', $MH{'path'}, 'schow.headers');
-	my($width)=$ARG{'wrapheader'}?$WIDTH:1024;
+	my($width)=$ARG{'wrapheader'}?$WIDTH:2048;
 	my(@head)=();
 	local($Text::Tabs::tabstop)=8;
 	local($_);
@@ -550,7 +564,7 @@ sub editor {
 	my($part)=@_;
 	my(@mhstore)=($MH{'storemimeproc'});
 	my(@editor)=($ARG{'editor'} || $MH{'editor'});
-	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+	my($fh, $temp)=tempfile("schow.${MSG}.XXXXX", 'DIR' => $MH{'path'});
 
 	if($PARTS[$part]{'msg'} && $temp) {
 		system('cp', '-a', $PARTS[$part]{'filename'}, $temp);
@@ -569,6 +583,92 @@ sub editor {
 	$BODY->focus();
 }
 
+=head3 Replying and Forwarding
+
+It is possible to initiate the reply or forward of a message from
+within B<schow>.  If a message is a meeting request, you may accept
+or decline the invitation as well.
+
+=cut
+
+sub ical {
+	my($reply, $response, $part, $ics)=@_;
+	my($store, $ical)=(IO::Handle->new, IO::Handle->new);
+	my($body)=IO::Handle->new;
+	my(@reply)=();
+	my(@ical)=();
+	my($draft);
+	local($_);
+
+	chomp($draft=`$MH{'pathproc'} +draft cur`);
+
+	$part=$PARTS[$part]{'part'};
+
+	open($store, '-|', $MH{'storemimeproc'}, '-part', $part, '-outfile', '-');
+	open($ical, '|-', $MH{'icalproc'}, '-reply', $reply, '-outfile', $ics);
+	while(<$store>) {
+		s/\r//g;
+		push(@ical, $_);
+		print $ical $_;
+	}
+	close($store);
+	close($ical);
+
+	open($body, '<', $draft);
+	while(<$body>) {
+		s/^Subject:\s*Re/Subject: $response/i;
+		push(@reply, $_);
+
+		if(m/^--------$/) {
+			push(@reply, "#begin alternative\n");
+		}
+	}
+	close($body);
+
+	open($body, '>', $draft);
+	print $body @reply;
+	print $body "\n#<text/calendar ; charset=\"UTF-8\"; method=REPLY *8bit\n";
+	print $body @ical;
+	print $body "#end (alternative)\n";
+	print $body "\n#application/ics [$response] {attachment; filename=\"invite.ics\"} $ics\n";
+	close($body);
+}
+
+sub reply {
+	my($action, $part)=@_;
+	my($fh, $temp)=tempfile("schow.${MSG}.XXXXX", 'DIR' => $MH{'path'});
+	my(@repl);
+
+	if($action=~m/repl/i) {
+		@repl=($MH{'replproc'});
+		push(@repl, '-group') if($action=~m/all/i);
+	} elsif($action=~m/forw/i) {
+		@repl=($MH{'forwproc'});
+	} elsif($action=~m/accept/i) {
+		system($MH{'replproc'}, '-nowhatnowproc');
+		&ical('accept', 'Accepted', $part, $temp);
+		@repl=($MH{'compproc'}, '-use');;
+	} elsif($action=~m/reject|decline/i) {
+		system($MH{'replproc'}, '-nowhatnowproc');
+		&ical('decline', 'Declined', $part, $temp);
+		@repl=($MH{'compproc'}, '-use');;
+	} elsif($action=~m/tentative|maybe/i) {
+		system($MH{'replproc'}, '-nowhatnowproc');
+		&ical('tentative', 'Tentative', $part, $temp);
+		@repl=($MH{'compproc'}, '-use');;
+	} else {
+		return;
+	}
+
+	$CUI->leave_curses();
+	system(@repl);
+	exit(0) if($ARG{'replyexit'});
+	$CUI->reset_curses();
+
+	unlink($temp);
+	$BODY->focus();
+}
+
 =head3 Message Text
 
 Any message parts which are of content type text and don't appear
@@ -583,10 +683,11 @@ B<schow> for content conversion.
 
 sub show {
 	my($part)=@_;
-	my(@show)=($MH{'showmimeproc'}, '-textonly', '-inlineonly',
-		'-form', 'mhl.body', '-markform', '/dev/null');
+	my(@show)=($MH{'showmimeproc'}, '-form', 'mhl.body',
+		'-markform', '/dev/null');
 	my($body)=IO::Handle->new;
 	my($type, $subtype)=split(m(/), $PARTS[$part]{'type'});
+	my($term)=$ENV{'TERM'};
 	my(@text)=();
 	my(@parts)=();
 	my($line)=0;
@@ -603,6 +704,7 @@ sub show {
 			}
 		}
 
+		$ENV{'TERM'}='dumb';
 		open($body, '-|', @show, @parts);
 		while(<$body>) {
 			$line++;
@@ -630,6 +732,7 @@ sub show {
 			}
 		}
 		close($body);
+		$ENV{'TERM'}=$term;
 
 		foreach(@text) {
 			s/\s+$//;
@@ -808,7 +911,7 @@ sub user {
 	my(@text)=();
 	my($pause)=0;
 	my($xstdin)=0;
-	my($fh, $temp)=tempfile("schow${MSG}XXXXX", 'DIR' => $MH{'path'});
+	my($fh, $temp)=tempfile("schow.${MSG}.XXXXX", 'DIR' => $MH{'path'});
 	local($_);
 
 	unless($CACHE{$PARTS[$part]}{$view}) {
@@ -939,9 +1042,11 @@ sub view {
 	}
 
 	if(m(text/plain)) {
-		@views=('show', sort(keys(%user)), 'about', 'editor', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'editor', 'save', 'reply', 'reply-all', 'forward');
+	} elsif(m(text/calendar|application/ics)) {
+		@views=('show', sort(keys(%user)), 'about', 'save', 'reply', 'reply-all', , 'forward', 'accept', 'decline', 'tentative');
 	} elsif(m(text/)) {
-		@views=('show', sort(keys(%user)), 'about', 'open', 'editor', 'save');
+		@views=('show', sort(keys(%user)), 'about', 'open', 'editor', 'save', 'reply', 'reply-all', 'forward');
 	} elsif(m(message/)) {
 		@views=('show', sort(keys(%user)), 'about', 'open', 'save');
 	} elsif(m(application/($text))i) {
@@ -984,6 +1089,9 @@ sub action {
 		$MENU_VIEW->{-selected}=0;
 	} elsif($view eq 'editor') {
 		&editor($part);
+		$MENU_VIEW->{-selected}=0;
+	} elsif($view=~m/reply|forward|accept|decline|tentative/i) {
+		&reply($view, $part);
 		$MENU_VIEW->{-selected}=0;
 	}
 
