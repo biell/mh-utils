@@ -102,7 +102,7 @@ Otherwise, it lets L<w3m(1)> render it.
 =cut
 
 sub markdown {
-	my(@pandoc)=qw(pandoc -f html -t markdown+pipe_tables);
+	my(@pandoc)=qw(pandoc -f html -t markdown+pipe_tables-fenced_divs);
 	my($cols)=$COLS-1;
 	my($md)=IO::Handle->new;
 	local($/)=undef;
@@ -117,6 +117,7 @@ sub markdown {
 	s|!?\[\]\((http.+?)\)|$1|sig;
 
 	s|\\'|'|g;
+	s|\\"|"|g;
 	s|\\<<|<|g;
 	s|>\\>|>|g;
 	s|\\--|--|g;
@@ -130,15 +131,14 @@ sub markdown {
 	s|</?div>\s*||ig;
 	s|</?div[>\s]+.*?>\s*||sig;
 
-	s|^(> )*:::.*$||mg;
-
-	s|{#gmail-.*?}||sig;
-
 	s|\\$||mg;
 	s|^[> ]+$||mg;
 	s|\n\s*?\n([> ]+)|\n$1\n$1|sg;
 
 	s|\s+$|\n\n|s;
+
+	s/\|\s+\|\n//sg;
+
 	print $_;
 }
 
