@@ -210,6 +210,17 @@ my(@SEL)=();
 
 =pod
 
+B<schow> uses curses to divide up these parts via the L<Curses::UI> module
+to manage the screen, with support for UTF-8 character sets.
+
+=cut
+
+*Curses::getch=\&getchar;
+*Curses::addstr=\&addstring;
+*Curses::insstr=\&insstring;
+
+=pod
+
 B<schow> is an C<mhshow> alternative/replacement.  In all practical ways, it
 acts the same as C<mhshow> for interactive use.  Just as C<show> and C<mhshow>
 do, it changes the C<cur> sequence when a message is viewed.
@@ -742,6 +753,7 @@ sub show {
 	}
 
 	$BODY->text(join("\n", @{$CACHE{$PARTS[$part]}{'show'}}));
+	#$BODY->text(join("\n", "--------", "-------"));
 	$BODY->draw(1);
 	#$BODY->focus();
 }
@@ -1186,7 +1198,7 @@ sub window {
 	$HEAD=$WIN->add('head', 'TextViewer',
 		-height       => $HEADERS,
 		-focusable    => 0,
-		-text         => join("\n", @{$CACHE{'headers'}}),
+		-text         => join("\n",  @{$CACHE{'headers'}}),
 		-nobeep       => $ARG{'nobeep'},
 	);
 	$MENU=$WIN->add('menu', 'Container',
