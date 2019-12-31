@@ -116,12 +116,6 @@ sub markdown {
 	s|!?\[\]\(\)||g;
 	s|!?\[\]\((http.+?)\)|$1|sig;
 
-	s|\\'|'|g;
-	s|\\"|"|g;
-	s|\\<<|<|g;
-	s|>\\>|>|g;
-	s|\\--|--|g;
-
 	s|&lt;<|<|ig;
 	s|>&gt;|>|ig;
 
@@ -138,6 +132,10 @@ sub markdown {
 	s|\s+$|\n\n|s;
 
 	s/\|\s+\|\n//sg;
+
+	s/\n\n(From|To|Cc|Date|Subject): /\n$1: /sg;
+
+	s|\\(?!\\)||g;
 
 	print $_;
 }
