@@ -116,8 +116,8 @@ my($RS, $US)=(chr(036), chr(037));
 my($FORMAT)=join($RS,
 	'%4(msg)',
 	'%<(cur)+%|%<(unseen)-%>%>',
-	'%<{replied}-%>'.
-		'%<{forwarded}f%>'.
+	'%<{replied}<%>'.
+		'%<{forwarded}>%>'.
 		'%<{resent}d%>'.
 		'%<{encrypted}E%>'.
 		'%<{list-id}l%>'.
@@ -255,8 +255,8 @@ sub info {
 	/lr?[se]/	and $in='L';
 
 	/E/		and $out='E';
-	/-/		and $out='-';
-	/f/		and $out='|';
+	/</		and $out='<';
+	/>/		and $out='>';
 	/d/		and $out='|';
 	/-[fd]/	and $out='+';
 
