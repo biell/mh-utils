@@ -154,6 +154,10 @@ sub w3m {
 	$_=<$txt>;
 	close($txt);
 
+	s|\[cid\]\n||sg;
+	s|\[image-no-m\]\n||sg;
+	s|\n\n+|\n\n|sg;
+
 	print $_;
 }
 
