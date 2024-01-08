@@ -568,6 +568,9 @@ to send your entire keyring.
 
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
+			#Sometimes '#' characters in the source message end up first:
+			s/^#(?!begin|end|<|\w+\/)/##/;
+
 			if(m/^MIME-Version:/) {
 				close($msg);
 				print "Draft is already in MIME format, message unchanged\n";
