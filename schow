@@ -128,14 +128,9 @@ my(%ARG)=(
 	'nobeep'      => 0,
 );
 
-my(@MH_SETTINGS)=qw(
-	editor pathproc showmimeproc lproc listmimeproc storemimeproc mhlproc
-	replproc forwproc icalproc scanproc pickproc libdir schow current-folder
-);
-my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
-	`mhparam -all; mhparam @MH_SETTINGS`);
+my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam -all -debug`);
 
-$MH{'pathproc'}||='mhpath';
+$MH{'pathproc'}||="$MH{'bindir'}/mhpath";
 $MH{'path'}=`$MH{'pathproc'} +`; chomp($MH{'path'});
 $MH{'current-folder'}||='inbox';
 $MH{'folder'}=join('/', $MH{'path'}, $MH{'current-folder'});
@@ -143,12 +138,12 @@ $MH{'schow'}||='';
 $MH{'listmimeproc'}||='mhlist';
 $MH{'storemimeproc'}||='mhstore';
 $MH{'mhlproc'}||=join('/', $MH{'libdir'}, 'mhl');
-$MH{'compproc'}||='comp';
-$MH{'replproc'}||='repl';
-$MH{'forwproc'}||='forw';
-$MH{'icalproc'}||='mhical';
-$MH{'scanproc'}||='scan';
-$MH{'pickproc'}||='pick';
+$MH{'compproc'}||="$MH{'bindir'}/comp";
+$MH{'replproc'}||="$MH{'bindir'}/repl";
+$MH{'forwproc'}||="$MH{'bindir'}/forw";
+$MH{'icalproc'}||="$MH{'bindir'}/mhical";
+$MH{'scanproc'}||="$MH{'bindir'}/scan";
+$MH{'pickproc'}||="$MH{'bindir'}/pick";
 $MH{'editor'}||=$ENV{'EDITOR'} || $ENV{'VISUAL'} || 'vi';
 
 unshift(@ARGV, shellwords($MH{'schow'}));

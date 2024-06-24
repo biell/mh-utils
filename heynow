@@ -20,12 +20,7 @@ use Cwd;
 
 my($PROMPT)=Term::ReadLine->new('whatnow');
 
-my(@MH_SETTINGS)=qw(
-	path editor showproc lproc sendproc fileproc whomproc showmimeproc
-	buildmimeproc mimetypeproc aliasfile libdir aliproc annoproc approc
-);
-my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s,
-	`mhparam -all; mhparam @MH_SETTINGS`);
+my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam -all -debug`);
 
 =head1 SYNOPSIS
 
@@ -163,9 +158,9 @@ $MH{'altmsg'}=$ENV{'mhaltmsg'} || $ENV{'editalt'};
 $MH{'temp'}=$MH{'draft'}; $MH{'temp'}=~s|/([^/]+)$|/,$1|;
 $MH{'backup'}=$MH{'draft'}; $MH{'backup'}=~s|/([^/]+)$|/,$1.bak|;
 $MH{'path'}=join('/', $ENV{'HOME'}, $MH{'path'});
-$MH{'aliproc'}||='ali';
-$MH{'annoproc'}||='anno';
-$MH{'approc'}||="$MH{'libdir'}/ap";
+$MH{'aliproc'}||="$MH{'bindir'}/ali";
+$MH{'annoproc'}||="$MH{'bindir'}/anno";
+$MH{'approc'}||="$MH{'libexecdir'}/ap";
 
 if($ARG{'nomarkup'}) {
 	delete($ARG{'markup'});
