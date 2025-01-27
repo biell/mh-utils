@@ -128,7 +128,12 @@ my(%ARG)=(
 	'nobeep'      => 0,
 );
 
-my(%MH)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam -all -debug`);
+my(@PARAMS)=map(m/^([\w\/-]+?):\s+(.*?)\s*$/s, `mhparam -all -debug`);
+my(%MH)=();
+while(@PARAMS) {
+	my($k, $v)=(shift(@PARAMS), shift(@PARAMS));
+	$MH{lc($k)}=$v;
+}
 
 $MH{'pathproc'}||="$MH{'bindir'}/mhpath";
 $MH{'path'}=`$MH{'pathproc'} +`; chomp($MH{'path'});
