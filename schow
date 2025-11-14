@@ -108,12 +108,11 @@ my(@OPTIONS)=qw(
 	mouse|mice|wheel|pointer|m
 	compat|simple|dumb|c
 	wrapheader|wrapheaders|wraphead|w
-	inversebar|i
 	inversebar|inverse|i
 	boldbar|bold|b
 	source|view-source|s
 	nobeep|B
-	editor|e=s
+	editor|E=s
 	version|v
 	help|h
 	manual|H

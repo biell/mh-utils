@@ -564,7 +564,7 @@ to send your entire keyring.
 		open($msg, '<', $MH{'draft'});
 		while(<$msg>) {
 			#Sometimes '#' characters in the source message end up first:
-			s/^#(?!begin|end|<|\w+\/)/##/;
+			s/^#(?!begin|end|forw|<|\w+\/)/##/g;
 
 			if(m/^MIME-Version:/) {
 				close($msg);
@@ -624,6 +624,9 @@ to send your entire keyring.
 			splice(@email, $end, 0, "#end (main)\n");
 		}
 
+open($mh, ">foo");
+print $mh @email;
+close($mh);
 		open2($mime, $mh, $MH{'buildmimeproc'}, @_, '-');
 		print $mh @email;
 		close($mh);
@@ -1371,6 +1374,11 @@ sub pandoc {
 			last;
 		} elsif(m/^#end \(alternative\)/) {
 			last;
+		} elsif(m|^#forw|) { #force forwaded messages outside markup
+			push(@post, $_);
+			while(m/\\$/) {
+				push(@post, $_=<$msg>);
+			}
 		} elsif(m|^#@?\w+/\w|) { #force attachments outside markup
 			push(@post, $_);
 			while(m/\\$/) {
