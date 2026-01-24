@@ -624,9 +624,6 @@ to send your entire keyring.
 			splice(@email, $end, 0, "#end (main)\n");
 		}
 
-open($mh, ">foo");
-print $mh @email;
-close($mh);
 		open2($mime, $mh, $MH{'buildmimeproc'}, @_, '-');
 		print $mh @email;
 		close($mh);

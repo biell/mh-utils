@@ -111,6 +111,8 @@ sub markdown {
 	$_=<$md>;
 	close($md);
 
+	print "\n\nERROR running:\n@pandoc\n\n" if($? || !$_);
+
 	s|([\)\]])\{.*?\}|$1|sg;
 
 	s|!?\[\]\(\)||g;
@@ -153,6 +155,8 @@ sub w3m {
 	open($txt, '-|', @w3m, '-cols', $COLS, @local, @_);
 	$_=<$txt>;
 	close($txt);
+
+	print "\n\nERROR running:\n@w3m\n\n" if($? || !$_);
 
 	s|\[cid\]\n||sg;
 	s|\[image-no-m\]\n||sg;
