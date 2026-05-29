@@ -359,6 +359,8 @@ using L<scan(1)>.
 
 foreach my $mid (keys(%MAIL)) {
 	foreach my $ancestor ($MAIL{$mid}{'reply-to'}, @{$MAIL{$mid}{'refs'}}) {
+		next if($ancestor eq $mid);
+
 		if($ancestor && $MAIL{$ancestor}) {
 			$MAIL{$mid}{'parent'}=$ancestor;
 			push(@{$MAIL{$ancestor}{'replies'}}, $mid);
