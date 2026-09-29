@@ -127,7 +127,7 @@ my($FORMAT)=join($RS,
 		'%<{content-type}%<(match multipart/mixed)a%>%>',
 	'%(clock{date})',
 	'%<(mymbox{from})%<{to}To:%14(decode(friendly{to}))%>%>'.
-		'%<(zero)%17(decode(friendly{from}))%>',
+		'%<(zero)%17(unquote(decode(friendly{from})))%>',
 	'%(decode{subject})',
 	'%{Message-ID}',
 	'%{In-Reply-To}',
@@ -336,6 +336,7 @@ while(<$SCAN>) {
 	} else {
 		$time=strftime($ARG{'date'}, localtime($time));
 	}
+
 	$MAIL{$id}{'scan'}=[
 		$msg,
 		$status,

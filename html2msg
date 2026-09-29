@@ -16,6 +16,8 @@ use Pod::Usage;
 my($SIZE)=0;
 my(%TAGS)=();
 
+my($TRIM)=2**16;
+
 =head1 SYNOPSIS
 
 html2msg [-I encoding] [file]
@@ -139,7 +141,7 @@ sub markdown {
 
 	s|\\(?!\\)||g;
 
-	print $_;
+	print substr($_, 0, $TRIM);
 }
 
 sub w3m {
@@ -158,11 +160,14 @@ sub w3m {
 
 	print "\n\nERROR running:\n@w3m\n\n" if($? || !$_);
 
+	s|\[open\]\n||sg;
 	s|\[cid\]\n||sg;
 	s|\[image-no-m\]\n||sg;
+	s|\[[\da-f-]{4,16}\]\n||sgi;
 	s|\n\n+|\n\n|sg;
+	s|References:\n.*$||s;
 
-	print $_;
+	print substr($_, 0, $TRIM);
 }
 
 =pod

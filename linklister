@@ -178,6 +178,12 @@ print "Links:\n------\n";
 foreach my $url (sort { $LINKS{$a} cmp $LINKS{$b} } keys(%LINKS)) {
 	if($url && $LINKS{$url} && $url ne $LINKS{$url}) {
 		print "\n[", $LINKS{$url}, "]\n", wrap('', '', $url), "\n\n";
+		if($url=~m/=(https?%3a%2f%2[^&]+)/i) {
+			my($surl)=$1;
+			$surl=~s/%([0-9A-Fa-f]{2})/chr(hex($1))/eg;
+			print "\nDecoded sub-URL for [", $LINKS{$url}, "]\n",
+			wrap('', '', $surl), "\n\n";
+		}
 		delete($LINKS{$url});
 	}
 }
